@@ -6,14 +6,13 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
+default = ["ham-xpt"]
+
+ham-xpt = ["ham"]
 controller = ["rs_ws281x"]
 
 [dependencies]
-ham = { git="https://github.com/cmaves/ham", branch = "master" }
-
-
-
-
+ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }
 rs_ws281x = { version = "0.2.3", optional=true }
 
 

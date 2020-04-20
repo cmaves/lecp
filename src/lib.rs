@@ -1,125 +1,253 @@
-use std::convert::{Infallible, TryFrom};
-
 #[cfg(feature = "controller")]
 pub mod controller;
 
+use ham::{IntoPacketReceiver, PacketReceiver, PacketSender};
+use std::time::{Duration, Instant};
 #[derive(Debug)]
-struct LedMsg {
+pub struct LedMsg {
     cur_time: u32,
     element: u8,
     color: u8,
     cmd: Command,
 }
-pub enum Error {
-    BadInput(String),
+
+#[derive(Copy, Clone, Debug)]
+pub enum Command {
+    Null,
+    Flat(u8),
+    PulseLinear(u8),
+    PulseQuadratic(u8),
 }
 
+pub enum Error {
+    BadInput(String),
+    HamError(ham::Error),
+}
+impl From<ham::Error> for Error {
+    fn from(err: ham::Error) -> Self {
+        Error::HamError(err)
+    }
+}
+
+fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>
+where
+    F: FnOnce() -> Error,
+{
+    let bytes = bytes.min(4);
+    let &u0 = buf.get(bytes - 1).ok_or_else(or_else)?;
+    let mut ret = u0 as u32;
+    for i in 0..(bytes - 1) {
+        ret += (buf[i] as u32) << ((bytes - i) * 8);
+    }
+    Ok(ret)
+}
 impl LedMsg {
-    fn deserilize(buf: &[u8], time: u32) -> Result<Vec<LedMsg>, Error> {
+    fn deserialize(buf: &[u8]) -> Result<Vec<LedMsg>, Error> {
         let mut ret = Vec::new();
-        let mut i = 0;
+        if buf.len() > 0 && buf.len() < 4 {
+            return Err(Error::BadInput(
+                "Buffer is too short and doesn't contain time.".to_string(),
+            ));
+        }
+        let time = ((buf[0] as u32) << 24)
+            + ((buf[1] as u32) << 16)
+            + ((buf[2] as u32) << 8)
+            + buf[3] as u32;
+        let mut i = 4;
         while i < buf.len() {
-            let (offset, extra0) = match buf[i] >> 6 {
-                0x00 => (0, 0),
-                0x01 => (buf[i + 3] as u32, 1),
-                0x02 => ((((buf[i + 3] as u32) << 8) + buf[i + 4] as u32), 2),
+            let extra_bytes = || {
+                Error::BadInput(format!(
+                    "There was an extra {} bytes at the end of the buffer.",
+                    buf.len() - i
+                ))
+            };
+            let (cur_time, extra0) = match buf[i] >> 5 {
+                0x00 => (time, 0),
+                0x01 => (
+                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 1, extra_bytes)?),
+                    1,
+                ),
+                0x02 => (
+                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 2, extra_bytes)?),
+                    2,
+                ),
                 0x03 => (
-                    (((buf[i + 3] as u32) << 16) + ((buf[i + 4] as u32) << 8) + buf[i + 5] as u32),
+                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 3, extra_bytes)?),
+                    3,
+                ),
+                0x04 => (slice_to_u32(&buf[i + 3..], 4, extra_bytes)?, 4),
+                0x05 => (
+                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 1, extra_bytes)?),
+                    1,
+                ),
+                0x06 => (
+                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 2, extra_bytes)?),
+                    2,
+                ),
+                0x07 => (
+                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 3, extra_bytes)?),
                     3,
                 ),
                 _ => unreachable!(),
             };
             let (cmd, extra1) = match (buf[i] >> 4) & 0x03 {
                 0x00 => (Command::Null, 0),
-                0x01 => (Command::Flat(buf[i + 3 + extra0]), 1),
-                0x02 => (Command::PulseLinear(buf[i + 3 + extra0]), 1),
-                0x03 => (Command::PulseQuadratic(buf[i + 3 + extra0]), 1),
+                0x01 => (
+                    Command::Flat(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
+                    1,
+                ),
+                0x02 => (
+                    Command::PulseLinear(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
+                    1,
+                ),
+                0x03 => (
+                    Command::PulseQuadratic(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
+                    1,
+                ),
                 _ => unreachable!(),
             };
             let msg = LedMsg {
-                cur_time: time.wrapping_add(offset),
+                cur_time,
                 element: buf[i + 1],
                 color: buf[i + 2],
                 cmd,
             };
-            i += 3 + extra0 + extra1;
             ret.push(msg);
+            i += 3 + extra0 + extra1;
         }
         Ok(ret)
     }
-    fn serialize(msgs: &[LedMsg], time: u32) -> Result<Vec<u8>, Error> {
-        let mut ret = Vec::new();
-        ret.extend_from_slice(&time.to_be_bytes());
-
-        for msg in msgs.iter() {
-            let mut buf = [0; 7];
-            let diff = msg.cur_time - time;
+    fn serialize(msgs: &[LedMsg], ret: &mut [u8]) -> (usize, usize) {
+        assert!(ret.len() >= 12);
+        let time = match msgs.get(0) {
+            Some(msg) => msg.cur_time,
+            None => 0,
+        };
+        ret[0..4].copy_from_slice(&time.to_be_bytes());
+        let mut i = 4;
+        for (j, msg) in msgs.iter().enumerate() {
+            let mut buf = [0; 8];
+            let diff = msg.cur_time.wrapping_sub(time);
             let (flag0, extra0) = if diff == 0 {
-                (0x0 << 6, 0)
+                ((0x0 << 5), 0)
             } else if diff < 256 {
                 buf[3] = diff as u8;
-                (0x1 << 6, 1)
+                ((0x1 << 5), 1)
             } else if diff < 65536 {
-                buf[3] = (diff >> 8) as u8;
-                buf[4] = diff as u8;
-                (0x02 << 6, 2)
+                buf[3..5].copy_from_slice(&diff.to_be_bytes()[2..4]);
+                ((0x02 << 5), 2)
             } else if diff < 16777216 {
-                buf[3] = (diff >> 16) as u8;
-                buf[4] = (diff >> 8) as u8;
-                buf[5] = diff as u8;
-                (0x03 << 6, 3)
+                buf[3..6].copy_from_slice(&diff.to_be_bytes()[1..4]);
+                ((0x03 << 5), 3)
+            } else if diff < 2147483648 || diff >= 2147483648 + 16777216 {
+                buf[3..7].copy_from_slice(&msg.cur_time.to_be_bytes());
+                ((0x04 << 5), 4)
+            } else if diff < 2147483648 + 256 {
+                buf[3] = diff as u8;
+                ((0x05 << 5), 1)
+            } else if diff < 2147483648 + 65536 {
+                buf[3..5].copy_from_slice(&diff.to_be_bytes()[2..4]);
+                ((0x06 << 5), 2)
             } else {
-                return Err(Error::BadInput(format!("{:?}'s offset was too much to be offset from time diff ({}) must be < 16777216 us", msg, diff)));
+                // implied: if diff < 2147483648 + 16777216, because of exhaustion
+                buf[3..6].copy_from_slice(&diff.to_be_bytes()[1..4]);
+                ((0x07 << 5), 3)
             };
             let (flag1, extra1) = match msg.cmd {
                 Command::Null => (0x00 << 4, 0),
                 Command::Flat(v) => {
                     buf[3 + extra0] = v;
-                    (0x01 << 4, 1)
+                    (0x01 << 3, 1)
                 }
                 Command::PulseLinear(v) => {
                     buf[3 + extra0] = v;
-                    (0x02 << 4, 1)
+                    (0x02 << 3, 1)
                 }
                 Command::PulseQuadratic(v) => {
                     buf[3 + extra0] = v;
-                    (0x03 << 4, 1)
+                    (0x03 << 3, 1)
                 }
             };
-            buf[0] = flag0 | flag1;
-            buf[1] = msg.element;
-            buf[2] = msg.color;
-            ret.extend_from_slice(&buf[..3 + extra0 + extra1]);
+            let msg_len = extra0 + extra1 + 3;
+            if i + msg_len < ret.len() {
+                buf[0] = flag0 | flag1;
+                buf[1] = msg.element;
+                buf[2] = msg.color;
+                ret.copy_from_slice(&buf[..msg_len]);
+                i += msg_len;
+            } else {
+                return (i, j);
+            }
         }
-        Ok(ret)
+        (i, msgs.len())
+    }
+}
+pub trait Receiver {
+    fn cur_time(&self) -> u32;
+    fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error>;
+    fn recv(&mut self) -> Result<Vec<LedMsg>, Error>;
+}
+
+#[cfg(feature = "ham-xpt")]
+pub struct HamReceiver<T: PacketReceiver> {
+    ham: T,
+}
+
+impl<T: PacketReceiver> HamReceiver<T> {
+    pub fn new<P>(pr: P) -> Result<Self, Error>
+    where
+        P: IntoPacketReceiver<Recv = T>,
+    {
+        let ham = pr.into_packet_receiver()?;
+        Ok(HamReceiver { ham })
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-enum Command {
-    Null,
-    Flat(u8),
-    PulseLinear(u8),
-    PulseQuadratic(u8),
-}
-impl From<Command> for (u8, u8) {
-    fn from(cmd: Command) -> (u8, u8) {
-        match cmd {
-            Command::Flat(v) => (0x00, v),
-            Command::PulseLinear(v) => (0x01, v),
-            Command::PulseQuadratic(v) => (0x02, v),
-            _ => unimplemented!(),
-        }
+impl<T: PacketReceiver> Receiver for HamReceiver<T> {
+    #[inline]
+    fn cur_time(&self) -> u32 {
+        self.ham.cur_time()
+    }
+    #[inline]
+    fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
+        let msg = self.ham.recv_pkt_to(timeout)?;
+        LedMsg::deserialize(&msg)
+    }
+    #[inline]
+    fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
+        let msg = self.ham.recv_pkt()?;
+        LedMsg::deserialize(&msg)
     }
 }
-impl TryFrom<(u8, u8)> for Command {
-    type Error = Infallible;
-    fn try_from(pair: (u8, u8)) -> Result<Command, Infallible> {
-        match pair.0 {
-            0x00 => Ok(Command::Flat(pair.1)),
-            0x01 => Ok(Command::PulseLinear(pair.1)),
-            0x02 => Ok(Command::PulseQuadratic(pair.1)),
-            _ => unimplemented!(),
+
+pub trait Sender {
+    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error>;
+}
+pub struct HamSender<T: PacketSender> {
+    ham: T,
+}
+
+impl<T: PacketSender> Sender for HamSender<T> {
+    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
+        let start = Instant::now();
+        let mut i = 0;
+        let mtu = self.ham.mtu();
+        let first_msg_time = if let Some(msg) = msgs.get(0) {
+            msg.cur_time
+        } else {
+            return Ok(());
+        };
+        while i < msgs.len() {
+            let mut buf = vec![0; mtu];
+            let (bytes, procs) = LedMsg::serialize(&msgs[i..], &mut buf);
+            i += procs;
+            buf.resize(bytes, 0);
+            self.ham.send_packet(
+                &buf,
+                first_msg_time
+                    .wrapping_add(Instant::now().duration_since(start).as_micros() as u32),
+            )?;
         }
+        Ok(())
     }
 }
