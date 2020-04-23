@@ -16,6 +16,17 @@ pub struct LedMsg {
     color: u8,
     cmd: Command,
 }
+impl Default for LedMsg {
+    #[inline]
+    fn default() -> Self {
+        LedMsg {
+            cur_time: 0,
+            element: 0,
+            color: 0,
+            cmd: Command::Null,
+        }
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Command {
