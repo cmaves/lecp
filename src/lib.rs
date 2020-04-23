@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedMsg {
-    cur_time: u32,
-    element: u8,
-    color: u8,
-    cmd: Command,
+    pub cur_time: u32,
+    pub element: u8,
+    pub color: u8,
+    pub cmd: Command,
 }
 impl Default for LedMsg {
     #[inline]
