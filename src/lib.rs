@@ -1,9 +1,15 @@
 #[cfg(feature = "controller")]
 pub mod controller;
 
+pub mod color;
+
+#[cfg(test)]
+pub mod tests;
+
 use ham::{IntoPacketReceiver, PacketReceiver, PacketSender};
 use std::time::{Duration, Instant};
-#[derive(Debug)]
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedMsg {
     cur_time: u32,
     element: u8,
@@ -11,24 +17,25 @@ pub struct LedMsg {
     cmd: Command,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Command {
     Null,
     Flat(u8),
     PulseLinear(u8),
     PulseQuadratic(u8),
+    FlatStack(u8),
 }
 
+#[derive(Debug)]
 pub enum Error {
     BadInput(String),
-    HamError(ham::Error),
+    Ham(ham::Error),
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
-        Error::HamError(err)
+        Error::Ham(err)
     }
 }
-
 fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>
 where
     F: FnOnce() -> Error,
@@ -36,7 +43,8 @@ where
     let bytes = bytes.min(4);
     let &u0 = buf.get(bytes - 1).ok_or_else(or_else)?;
     let mut ret = u0 as u32;
-    for i in 0..(bytes - 1) {
+    let bytes = bytes - 1;
+    for i in 0..bytes {
         ret += (buf[i] as u32) << ((bytes - i) * 8);
     }
     Ok(ret)
@@ -61,6 +69,9 @@ impl LedMsg {
                     buf.len() - i
                 ))
             };
+            if i + 2 >= buf.len() {
+                return Err(extra_bytes());
+            }
             let (cur_time, extra0) = match buf[i] >> 5 {
                 0x00 => (time, 0),
                 0x01 => (
@@ -90,7 +101,7 @@ impl LedMsg {
                 ),
                 _ => unreachable!(),
             };
-            let (cmd, extra1) = match (buf[i] >> 4) & 0x03 {
+            let (cmd, extra1) = match (buf[i] >> 2) & 0x07 {
                 0x00 => (Command::Null, 0),
                 0x01 => (
                     Command::Flat(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
@@ -104,6 +115,11 @@ impl LedMsg {
                     Command::PulseQuadratic(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
                     1,
                 ),
+                0x04 => (
+                    Command::FlatStack(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
+                    1,
+                ),
+
                 _ => unreachable!(),
             };
             let msg = LedMsg {
@@ -154,28 +170,34 @@ impl LedMsg {
                 ((0x07 << 5), 3)
             };
             let (flag1, extra1) = match msg.cmd {
-                Command::Null => (0x00 << 4, 0),
+                Command::Null => (0x00 << 2, 0),
                 Command::Flat(v) => {
                     buf[3 + extra0] = v;
-                    (0x01 << 3, 1)
+                    (0x01 << 2, 1)
                 }
                 Command::PulseLinear(v) => {
                     buf[3 + extra0] = v;
-                    (0x02 << 3, 1)
+                    (0x02 << 2, 1)
                 }
                 Command::PulseQuadratic(v) => {
                     buf[3 + extra0] = v;
-                    (0x03 << 3, 1)
+                    (0x03 << 2, 1)
+                }
+                Command::FlatStack(v) => {
+                    buf[3 + extra0] = v;
+                    (0x04 << 2, 1)
                 }
             };
             let msg_len = extra0 + extra1 + 3;
             if i + msg_len < ret.len() {
+                // we have enough room in the buffer so append
                 buf[0] = flag0 | flag1;
                 buf[1] = msg.element;
                 buf[2] = msg.color;
-                ret.copy_from_slice(&buf[..msg_len]);
-                i += msg_len;
+                ret[i..i + msg_len].copy_from_slice(&buf[..msg_len]);
+                i += msg_len; // iterate for the next buffer
             } else {
+                // no room in buffer so discard last msg and return
                 return (i, j);
             }
         }
@@ -185,9 +207,28 @@ impl LedMsg {
 pub trait Receiver {
     fn cur_time(&self) -> u32;
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error>;
+    #[inline]
+    fn try_recv(&mut self) -> Result<Vec<LedMsg>, Error> {
+        self.recv_to(Duration::from_secs(0))
+    }
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error>;
+    fn try_iter(&mut self) -> TryIter<'_, Self>
+    where
+        Self: Sized,
+    {
+        TryIter { recv: self }
+    }
 }
-
+pub struct TryIter<'a, T: Receiver> {
+    recv: &'a mut T,
+}
+impl<T: Receiver> Iterator for TryIter<'_, T> {
+    type Item = Vec<LedMsg>;
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.recv.try_recv().ok()
+    }
+}
 #[cfg(feature = "ham-xpt")]
 pub struct HamReceiver<T: PacketReceiver> {
     ham: T,
