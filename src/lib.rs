@@ -361,7 +361,7 @@ impl Sender for LocalSender {
     }
 }
 
-fn channel(size: usize) -> (LocalSender, LocalReceiver) {
+pub fn channel(size: usize) -> (LocalSender, LocalReceiver) {
     let (sender, recv) = mpsc::sync_channel(size);
     let start = Instant::now();
     (LocalSender { sender, start }, LocalReceiver { start, recv })
