@@ -9,7 +9,7 @@ edition = "2018"
 default = ["ham-xpt"]
 
 ham-xpt = ["ham"]
-controller = ["rs_ws281x"]
+rpi = ["rs_ws281x"]
 
 [dependencies]
 ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }

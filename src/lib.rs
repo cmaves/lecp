@@ -1,4 +1,3 @@
-#[cfg(feature = "controller")]
 pub mod controller;
 
 pub mod color;

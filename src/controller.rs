@@ -1,18 +1,42 @@
 use crate::color::ColorMap;
 use crate::{Command, LedMsg, Receiver};
-use rs_ws281x::{ChannelBuilder, ControllerBuilder};
+
+#[cfg(feature = "rpi")]
+pub use rs_ws281x;
 use std::collections::VecDeque;
 
-pub struct Controller<T: Receiver> {
+pub trait Controller {
+    fn leds_mut(&mut self) -> &mut [[u8; 4]];
+    fn leds(&self) -> &[[u8; 4]];
+    fn render(&mut self);
+}
+
+#[cfg(feature = "rpi")]
+impl Controller for rs_ws281x::Controller {
+    #[inline]
+    fn leds_mut(&mut self) -> &mut [[u8; 4]] {
+        self.leds_mut(0)
+    }
+    #[inline]
+    fn leds(&self) -> &[[u8; 4]] {
+        self.leds(0)
+    }
+    #[inline]
+    fn render(&mut self) {
+        self.render().unwrap()
+    }
+}
+pub struct Renderer<T: Receiver, C: Controller> {
     recv: T,
-    ctl: rs_ws281x::Controller,
+    ctl: C,
     msgs: VecDeque<(bool, LedMsg)>,
     blend: u8,
     color_map: ColorMap,
 }
 
-impl<T: Receiver> Controller<T> {
-    fn new(recv: T, pin: i32, count: i32) -> Result<Self, std::io::Error> {
+impl<R: Receiver, C: Controller> Renderer<R, C> {
+    pub fn new(recv: R, ctl: C) -> Result<Self, std::io::Error> {
+        /*
         let channel = rs_ws281x::ChannelBuilder::new()
             .pin(pin)
             .strip_type(rs_ws281x::StripType::Ws2812)
@@ -24,10 +48,10 @@ impl<T: Receiver> Controller<T> {
             .channel(0, channel)
             .build()
             .unwrap(); // TODO: figure out how to map this
-
-        Ok(Controller {
-            ctl,
+         */
+        Ok(Renderer {
             recv,
+            ctl,
             msgs: VecDeque::new(),
             blend: 0,
             color_map: ColorMap::default(),
@@ -100,7 +124,7 @@ impl<T: Receiver> Controller<T> {
                 }
             }
         }
-        let mut leds = self.ctl.leds_mut(0);
+        let leds = self.ctl.leds_mut();
         for (led, src) in leds.iter_mut().zip(buf.iter()) {
             if self.blend == 0 {
                 *led = *src;
