@@ -6,6 +6,7 @@ pub mod color;
 pub mod tests;
 
 use ham::{IntoPacketReceiver, PacketReceiver, PacketSender};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -39,7 +40,9 @@ pub enum Command {
 #[derive(Debug)]
 pub enum Error {
     BadInput(String),
+    Unrecoverable(String),
     Ham(ham::Error),
+    Timeout(String),
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
@@ -302,4 +305,64 @@ impl<T: PacketSender> Sender for HamSender<T> {
         }
         Ok(())
     }
+}
+
+pub struct LocalReceiver {
+    start: Instant,
+    recv: mpsc::Receiver<Vec<LedMsg>>,
+}
+
+impl Receiver for LocalReceiver {
+    #[inline]
+    fn cur_time(&self) -> u32 {
+        Instant::now().duration_since(self.start).as_micros() as u32
+    }
+    #[inline]
+    fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
+        let msgs = self
+            .recv
+            .recv()
+            .map_err(|_| Error::Unrecoverable("Sender has disconnected.".to_string()))?;
+        Ok(msgs)
+    }
+    #[inline]
+    fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
+        let msgs = self.recv.recv_timeout(timeout).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => {
+                Error::Timeout("LocalReceiver: recv timeout".to_string())
+            }
+            mpsc::RecvTimeoutError::Disconnected => {
+                Error::Unrecoverable("LocalReceiver: senders disconnected".to_string())
+            }
+        })?;
+        Ok(msgs)
+    }
+}
+pub struct LocalSender {
+    start: Instant,
+    sender: mpsc::SyncSender<Vec<LedMsg>>,
+}
+impl LocalSender {
+    #[inline]
+    pub fn start_time(&self) -> u32 {
+        Instant::now().duration_since(self.start).as_micros() as u32
+    }
+    #[inline]
+    pub fn start(&self) -> Instant {
+        self.start
+    }
+}
+impl Sender for LocalSender {
+    #[inline]
+    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
+        self.sender
+            .send(Vec::from(msgs))
+            .map_err(|_| Error::Unrecoverable("LocalSender: receiver disconnected".to_string()))
+    }
+}
+
+fn channel(size: usize) -> (LocalSender, LocalReceiver) {
+    let (sender, recv) = mpsc::sync_channel(size);
+    let start = Instant::now();
+    (LocalSender { sender, start }, LocalReceiver { start, recv })
 }
