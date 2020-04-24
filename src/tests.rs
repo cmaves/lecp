@@ -1,5 +1,5 @@
 use crate::color::Color;
-use crate::{Command, LedMsg};
+use crate::{channel, Command, LedMsg, Receiver, Sender};
 use rand::prelude::*;
 
 fn rng() -> StdRng {
@@ -9,8 +9,7 @@ fn rng() -> StdRng {
     }
     StdRng::from_seed(seed)
 }
-#[test]
-fn serial_deserialize() {
+fn generate_test_msgs() -> [LedMsg; 255] {
     let mut test_vals = [LedMsg {
         cmd: Command::Null,
         cur_time: 0,
@@ -49,6 +48,11 @@ fn serial_deserialize() {
             msg.color = rng.gen();
         }
     }
+    test_vals
+}
+#[test]
+fn serial_deserialize() {
+    let test_vals = generate_test_msgs();
     let mut i = 0;
     // serialize
     while i < test_vals.len() {
@@ -60,5 +64,16 @@ fn serial_deserialize() {
         let cpy = LedMsg::deserialize(&buf[..bytes]).unwrap();
         assert_eq!(&test_vals[i..i + msgs], &cpy[..]);
         i += msgs;
+    }
+}
+
+#[test]
+fn local_send_receive() {
+    let test_vals = generate_test_msgs();
+    let (mut sender, mut recv) = channel(1);
+    for i in 0..5 {
+        sender.send(&test_vals[i * 51..(i + 1) * 51]).unwrap();
+        let cpy = recv.recv().unwrap();
+        assert_eq!(&test_vals[i * 51..(i + 1) * 51], &cpy[..]);
     }
 }
