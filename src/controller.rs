@@ -35,27 +35,14 @@ pub struct Renderer<T: Receiver, C: Controller> {
 }
 
 impl<R: Receiver, C: Controller> Renderer<R, C> {
-    pub fn new(recv: R, ctl: C) -> Result<Self, std::io::Error> {
-        /*
-        let channel = rs_ws281x::ChannelBuilder::new()
-            .pin(pin)
-            .strip_type(rs_ws281x::StripType::Ws2812)
-            .count(count)
-            .brightness(255)
-            .build();
-        let ctl = ControllerBuilder::new()
-            .freq(800_000)
-            .channel(0, channel)
-            .build()
-            .unwrap(); // TODO: figure out how to map this
-         */
-        Ok(Renderer {
+    pub fn new(recv: R, ctl: C) -> Self {
+        Renderer {
             recv,
             ctl,
             msgs: VecDeque::new(),
             blend: 0,
             color_map: ColorMap::default(),
-        })
+        }
     }
     #[inline]
     pub fn set_blend(&mut self, blend: u8) {
