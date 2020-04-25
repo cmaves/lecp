@@ -20,6 +20,12 @@ impl Color {
         blue: 255,
         alpha: 0,
     };
+    pub const WHITE_NORM: Color = Color {
+        red: 85,
+        green: 85,
+        blue: 85,
+        alpha: 0,
+    };
     pub const RED: Color = Color {
         red: 255,
         green: 0,
@@ -45,8 +51,8 @@ impl Color {
         alpha: 0,
     };
     pub const YELLOW_NORM: Color = Color {
-        red: 170,
-        green: 170,
+        red: 128,
+        green: 128,
         blue: 0,
         alpha: 0,
     };
@@ -69,9 +75,9 @@ impl Color {
         alpha: 0,
     };
     pub const MAGENTA_NORM: Color = Color {
-        red: 170,
+        red: 128,
         green: 0,
-        blue: 170,
+        blue: 128,
         alpha: 0,
     };
     pub const PURPLE: Color = Color {

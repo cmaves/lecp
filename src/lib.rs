@@ -243,6 +243,7 @@ impl<T: Receiver> Iterator for TryIter<'_, T> {
         self.recv.try_recv().ok()
     }
 }
+/*
 #[cfg(feature = "ham-xpt")]
 pub struct HamReceiver<T: PacketReceiver> {
     ham: T,
@@ -257,20 +258,21 @@ impl<T: PacketReceiver> HamReceiver<T> {
         Ok(HamReceiver { ham })
     }
 }
+*/
 
-impl<T: PacketReceiver> Receiver for HamReceiver<T> {
+impl<T: PacketReceiver> Receiver for T {
     #[inline]
     fn cur_time(&self) -> u32 {
-        self.ham.cur_time()
+        self.cur_time()
     }
     #[inline]
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
-        let msg = self.ham.recv_pkt_to(timeout)?;
+        let msg = self.recv_pkt_to(timeout)?;
         LedMsg::deserialize(&msg)
     }
     #[inline]
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
-        let msg = self.ham.recv_pkt()?;
+        let msg = self.recv_pkt()?;
         LedMsg::deserialize(&msg)
     }
 }
@@ -278,26 +280,29 @@ impl<T: PacketReceiver> Receiver for HamReceiver<T> {
 pub trait Sender {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error>;
 }
+/*
 pub struct HamSender<T: PacketSender> {
     ham: T,
 }
+*/
 
-impl<T: PacketSender> Sender for HamSender<T> {
+impl<T: PacketSender> Sender for T {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
-        let start = Instant::now();
-        let mut i = 0;
-        let mtu = self.ham.mtu();
         let first_msg_time = if let Some(msg) = msgs.get(0) {
             msg.cur_time
         } else {
             return Ok(());
         };
+        let start = Instant::now();
+        let mut i = 0;
+        let mtu = self.mtu();
+
         while i < msgs.len() {
             let mut buf = vec![0; mtu];
             let (bytes, procs) = LedMsg::serialize(&msgs[i..], &mut buf);
             i += procs;
             buf.resize(bytes, 0);
-            self.ham.send_packet(
+            self.send_packet(
                 &buf,
                 first_msg_time
                     .wrapping_add(Instant::now().duration_since(start).as_micros() as u32),
@@ -308,24 +313,25 @@ impl<T: PacketSender> Sender for HamSender<T> {
 }
 
 pub struct LocalReceiver {
-    start: Instant,
-    recv: mpsc::Receiver<Vec<LedMsg>>,
+    last_inst: Instant,
+    last_time: u32,
+    recv: mpsc::Receiver<(Vec<LedMsg>, Instant, u32)>,
 }
 
 impl Receiver for LocalReceiver {
     #[inline]
     fn cur_time(&self) -> u32 {
-        Instant::now().duration_since(self.start).as_micros() as u32
+        (Instant::now().duration_since(self.last_inst).as_micros() + self.last_time as u128) as u32
     }
-    #[inline]
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
         let msgs = self
             .recv
             .recv()
             .map_err(|_| Error::Unrecoverable("Sender has disconnected.".to_string()))?;
-        Ok(msgs)
+        self.last_inst = msgs.1;
+        self.last_time = msgs.2;
+        Ok(msgs.0)
     }
-    #[inline]
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
         let msgs = self.recv.recv_timeout(timeout).map_err(|e| match e {
             mpsc::RecvTimeoutError::Timeout => {
@@ -335,34 +341,37 @@ impl Receiver for LocalReceiver {
                 Error::Unrecoverable("LocalReceiver: senders disconnected".to_string())
             }
         })?;
-        Ok(msgs)
+        self.last_inst = msgs.1;
+        self.last_time = msgs.2;
+        Ok(msgs.0)
     }
 }
 pub struct LocalSender {
-    start: Instant,
-    sender: mpsc::SyncSender<Vec<LedMsg>>,
-}
-impl LocalSender {
-    #[inline]
-    pub fn start_time(&self) -> u32 {
-        Instant::now().duration_since(self.start).as_micros() as u32
-    }
-    #[inline]
-    pub fn start(&self) -> Instant {
-        self.start
-    }
+    sender: mpsc::SyncSender<(Vec<LedMsg>, Instant, u32)>,
 }
 impl Sender for LocalSender {
     #[inline]
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
+        let first_msg_time = if let Some(msg) = msgs.get(0) {
+            msg.cur_time
+        } else {
+            return Ok(());
+        };
         self.sender
-            .send(Vec::from(msgs))
+            .send((Vec::from(msgs), Instant::now(), first_msg_time))
             .map_err(|_| Error::Unrecoverable("LocalSender: receiver disconnected".to_string()))
     }
 }
 
 pub fn channel(size: usize) -> (LocalSender, LocalReceiver) {
     let (sender, recv) = mpsc::sync_channel(size);
-    let start = Instant::now();
-    (LocalSender { sender, start }, LocalReceiver { start, recv })
+    let last_inst = Instant::now();
+    (
+        LocalSender { sender },
+        LocalReceiver {
+            last_inst,
+            last_time: 0,
+            recv,
+        },
+    )
 }

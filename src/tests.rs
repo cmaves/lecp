@@ -60,7 +60,6 @@ fn serial_deserialize() {
         let (bytes, msgs) = LedMsg::serialize(&test_vals[i..], &mut buf);
         eprintln!("bytes: {}, msgs: {}", bytes, msgs);
         eprintln!("{:#?}", &test_vals[i..i + msgs]);
-        //eprintln!("{:#4x?}", &buf[..bytes]);
         let cpy = LedMsg::deserialize(&buf[..bytes]).unwrap();
         assert_eq!(&test_vals[i..i + msgs], &cpy[..]);
         i += msgs;

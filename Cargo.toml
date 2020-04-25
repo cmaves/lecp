@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Curtis Maves <curtismaves@gmail.com>"]
 edition = "2018"
 
+[[bin]]
+name = "ecp-controller"
+required-features = ["ham-xpt", "rpi"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
 default = ["ham-xpt"]
@@ -14,6 +18,9 @@ rpi = ["rs_ws281x"]
 [dependencies]
 ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }
 rs_ws281x = { version = "0.2.3", optional=true }
+clap = "2.33.0"
+gpio-cdev = "0.2.0"
+spidev = "0.4.0"
 
 [dev-dependencies]
 rand = "0.7.3"
