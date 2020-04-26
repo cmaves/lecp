@@ -15,7 +15,7 @@ pub fn main() {
     let args = parser.get_matches();
     let pin = u8::from_str(args.value_of("led_pin").unwrap()).unwrap() as i32;
     let count = u16::from_str(args.value_of("led_count").unwrap()).unwrap() as i32;
-    let mut chip = Chip::new("/dev/spidev0.0").unwrap();
+    let mut chip = Chip::new("/dev/gpiochip0").unwrap();
     let en = chip
         .get_line(u32::from_str(args.value_of("en").unwrap()).unwrap())
         .unwrap();

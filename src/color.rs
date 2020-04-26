@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut};
+use std::ops::{Index, IndexMut, Mul};
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
     red: u8,
@@ -6,6 +6,26 @@ pub struct Color {
     blue: u8,
     alpha: u8,
 }
+
+impl Mul<f32> for Color {
+    type Output = Self;
+    fn mul(mut self, rhs: f32) -> Self::Output {
+        self.red = (self.red as f32 * rhs).round().max(255.0) as u8;
+        self.blue = (self.blue as f32 * rhs).round().max(255.0) as u8;
+        self.green = (self.green as f32 * rhs).round().max(255.0) as u8;
+        self
+    }
+}
+impl Mul<f64> for Color {
+    type Output = Self;
+    fn mul(mut self, rhs: f64) -> Self::Output {
+        self.red = (self.red as f64 * rhs).round().max(255.0) as u8;
+        self.blue = (self.blue as f64 * rhs).round().max(255.0) as u8;
+        self.green = (self.green as f64 * rhs).round().max(255.0) as u8;
+        self
+    }
+}
+
 // const BLACK: Color = Color { red: 0, green: 0, blue: 0, alpha: 0 };
 impl Color {
     pub const BLACK: Color = Color {
