@@ -108,7 +108,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                         let end = leds
                             .len()
                             .min(flat_stack + ((v as f32 + 1.0) * ratio).round() as usize);
-                        let color = self.color_map[msg.color].to_bgra();
+                        let color = self.color_map[msg.color as usize].to_bgra();
                         for j in flat_stack..end {
                             // add color
                             for (spt, sps) in self.work_buf[j].iter_mut().zip(color.iter()) {
