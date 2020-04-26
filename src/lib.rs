@@ -46,7 +46,10 @@ pub enum Error {
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
-        Error::Ham(err)
+        match err {
+            ham::Error::Timeout(e) => Error::Timeout(format!("{:?}", e)),
+            e => Error::Ham(e),
+        }
     }
 }
 fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>

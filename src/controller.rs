@@ -36,12 +36,22 @@ pub struct Renderer<T: Receiver, C: Controller> {
     msgs: Vec<LedMsg>,
     pub blend: u8,
     pub color_map: ColorMap,
-    pub verbose: bool,
+    pub verbose: u8,
 }
 
 impl<R: Receiver, C: Controller> Renderer<R, C> {
-    pub fn new(recv: R, ctl: C) -> Self {
+    pub fn new(recv: R, mut ctl: C) -> Self {
         let work_buf = Vec::with_capacity(ctl.leds().len());
+        let color = Color {
+            red: 1,
+            blue: 1,
+            green: 1,
+            alpha: 0,
+        }
+        .to_bgra();
+        for led in ctl.leds_mut().iter_mut() {
+            *led = color;
+        }
         Renderer {
             work_buf,
             recv,
@@ -49,7 +59,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
             msgs: Vec::new(),
             blend: 0,
             color_map: ColorMap::default(),
-            verbose: false,
+            verbose: 0,
         }
     }
     #[inline]
@@ -82,6 +92,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         let mut first_active = 256;
         let cur_time = self.recv.cur_time();
         for (i, msg) in self.msgs.iter().enumerate().rev() {
+            if self.verbose >= 3 {
+                eprintln!("msg {}: {:?}", i, msg);
+            }
             if cur_time.wrapping_sub(msg.cur_time) <= 5_000_000 {
                 let e = msg.element as usize;
                 if let None = elements[e] {
@@ -100,6 +113,14 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         let ratio = leds.len() as f32 / 256.0;
         self.work_buf.clear();
         self.work_buf.resize(leds.len(), [0; 4]);
+        if self.verbose >= 3 && first_active < last_active {
+            eprintln!(
+                "active elements [{},{}): {:?}",
+                first_active,
+                last_active,
+                &elements[first_active..last_active]
+            );
+        }
         for i in first_active..last_active {
             if let Some(m) = elements[i as usize] {
                 let msg = self.msgs[m];
@@ -121,9 +142,11 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                 }
             }
         }
+        let mut changed = false;
         for (led, src) in leds.iter_mut().zip(self.work_buf.iter()) {
-            if self.blend == 0 {
+            if self.blend == 0 && *led != *src {
                 *led = *src;
+                changed = true;
             } else {
                 for (d, s) in led.iter_mut().zip(src.iter()) {
                     if *d != *s {
@@ -134,6 +157,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                         } else {
                             *d = newval;
                         }
+                        changed = true;
                     }
                 }
             }
@@ -150,7 +174,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
             };
         }
         */
-        self.ctl.render();
+        if changed {
+            self.ctl.render();
+        }
 
         // Prune old msgs
         let mut del = 0;
@@ -182,7 +208,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
             if let Err(e) = self.update_leds() {
                 return e;
             }
-            if self.verbose {
+            if self.verbose >= 2 {
                 let since = now.duration_since(fps_period);
                 if since > Duration::from_secs(5) {
                     eprintln!(

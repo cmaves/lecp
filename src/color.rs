@@ -1,11 +1,11 @@
 use std::ops::{Deref, DerefMut, Mul, MulAssign};
 use std::slice::SliceIndex;
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
-    red: u8,
-    green: u8,
-    blue: u8,
-    alpha: u8,
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub alpha: u8,
 }
 impl MulAssign<f32> for Color {
     fn mul_assign(&mut self, rhs: f32) {
@@ -116,6 +116,15 @@ impl Color {
         blue: 128,
         alpha: 0,
     };
+    #[inline]
+    pub fn from_bgra(color: [u8; 4]) -> Self {
+        Color {
+            blue: color[0],
+            green: color[1],
+            red: color[2],
+            alpha: color[3],
+        }
+    }
     #[inline]
     pub fn to_rgb(&self) -> [u8; 3] {
         [self.red, self.blue, self.green]

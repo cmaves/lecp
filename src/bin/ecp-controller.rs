@@ -3,7 +3,7 @@ use ecp::color::Color;
 use ecp::controller::Renderer;
 use gpio_cdev::Chip;
 use ham::rfm69::Rfm69;
-use ham::IntoPacketReceiver;
+use ham::{IntoPacketReceiver, PacketReceiver};
 use spidev::Spidev;
 use std::num::{NonZeroU16, NonZeroU8};
 use std::str::FromStr;
@@ -15,6 +15,7 @@ pub fn main() {
     let args = parser.get_matches();
     let pin = u8::from_str(args.value_of("led_pin").unwrap()).unwrap() as i32;
     let count = u16::from_str(args.value_of("led_count").unwrap()).unwrap() as i32;
+    let verbose = args.occurrences_of("verbose") as u8;
     let mut chip = Chip::new("/dev/gpiochip0").unwrap();
     let en = chip
         .get_line(u32::from_str(args.value_of("en").unwrap()).unwrap())
@@ -25,33 +26,26 @@ pub fn main() {
     let spi = Spidev::open(args.value_of("spi").unwrap()).unwrap();
     let mut rfm = Rfm69::new(rst, en, spi).unwrap();
     rfm.set_bitrate(45000).unwrap();
-    let recv = rfm.into_packet_receiver().unwrap();
-    Builder::new()
-        .name("rendering".to_string())
-        .spawn(move || {
-            let channel = rs_ws281x::ChannelBuilder::new()
-                .pin(pin)
-                .strip_type(rs_ws281x::StripType::Ws2812)
-                .count(count)
-                .brightness(255)
-                .build();
-            let ctl = rs_ws281x::ControllerBuilder::new()
-                .freq(800_000)
-                .channel(0, channel)
-                .build()
-                .unwrap();
-            let mut renderer = Renderer::new(recv, ctl);
-            renderer.blend = 3;
-            renderer.verbose = true;
-            renderer.color_map[2] = Color::YELLOW;
-            renderer.color_map[3] = Color::GREEN;
-            renderer.color_map[4] = Color::BLUE;
-            panic!(
-                "Rendering thread quit: {:?}",
-                renderer.update_leds_loop(60.0)
-            );
-        })
+    let mut recv = rfm.into_packet_receiver().unwrap();
+    recv.start().unwrap();
+    let channel = rs_ws281x::ChannelBuilder::new()
+        .pin(pin)
+        .strip_type(rs_ws281x::StripType::Ws2812)
+        .count(count)
+        .brightness(255)
+        .build();
+    let ctl = rs_ws281x::ControllerBuilder::new()
+        .freq(800_000)
+        .channel(0, channel)
+        .build()
         .unwrap();
+    let mut renderer = Renderer::new(recv, ctl);
+    renderer.blend = 3;
+    renderer.verbose = verbose;
+    renderer.color_map[2] = Color::YELLOW;
+    renderer.color_map[3] = Color::GREEN;
+    renderer.color_map[4] = Color::BLUE;
+    panic!("Rendering quit: {:?}", renderer.update_leds_loop(60.0));
 }
 
 fn parser<'a, 'b>() -> App<'a, 'b> {
@@ -133,5 +127,11 @@ fn parser<'a, 'b>() -> App<'a, 'b> {
                         .map(|_| ())
                         .map_err(|e| format!("{:?}", e))
                 }),
+        )
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .multiple(true),
         )
 }
