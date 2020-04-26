@@ -1,4 +1,4 @@
-use std::ops::{Index, IndexMut, Mul};
+use std::ops::{Index, IndexMut, Mul, MulAssign};
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
     red: u8,
@@ -6,7 +6,16 @@ pub struct Color {
     blue: u8,
     alpha: u8,
 }
-
+impl MulAssign<f32> for Color {
+    fn mul_assign(&mut self, rhs: f32) {
+        *self = *self * rhs;
+    }
+}
+impl MulAssign<f64> for Color {
+    fn mul_assign(&mut self, rhs: f64) {
+        *self = *self * rhs;
+    }
+}
 impl Mul<f32> for Color {
     type Output = Self;
     fn mul(mut self, rhs: f32) -> Self::Output {
