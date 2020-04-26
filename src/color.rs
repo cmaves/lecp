@@ -1,4 +1,5 @@
-use std::ops::{Index, IndexMut, Mul, MulAssign};
+use std::ops::{Deref, DerefMut, Mul, MulAssign};
+use std::slice::SliceIndex;
 #[derive(Debug, Clone, Copy)]
 pub struct Color {
     red: u8,
@@ -141,15 +142,15 @@ impl Default for Color {
 }
 pub struct ColorMap([Color; 256]);
 
-impl Index<u8> for ColorMap {
-    type Output = Color;
-    fn index(&self, index: u8) -> &Self::Output {
-        &self.0[index as usize]
+impl Deref for ColorMap {
+    type Target = [Color; 256];
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
-impl IndexMut<u8> for ColorMap {
-    fn index_mut(&mut self, index: u8) -> &mut Self::Output {
-        &mut self.0[index as usize]
+impl DerefMut for ColorMap {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
