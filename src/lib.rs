@@ -2,6 +2,11 @@ pub mod controller;
 
 pub mod color;
 
+#[cfg(feature = "bluetooth")]
+pub mod bluetooth;
+#[cfg(feature = "bluetooth")]
+use rustable;
+
 #[cfg(test)]
 pub mod tests;
 
@@ -43,6 +48,8 @@ pub enum Error {
     Unrecoverable(String),
     Ham(ham::Error),
     Timeout(String),
+    #[cfg(feature = "bluetooth")]
+    Bluetooth(rustable::Error),
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
@@ -50,6 +57,11 @@ impl From<ham::Error> for Error {
             ham::Error::Timeout(e) => Error::Timeout(format!("{:?}", e)),
             e => Error::Ham(e),
         }
+    }
+}
+impl From<rustable::Error> for Error {
+    fn from(err: rustable::Error) -> Self {
+        Error::Bluetooth(err)
     }
 }
 fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>

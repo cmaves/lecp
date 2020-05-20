@@ -8,18 +8,25 @@ edition = "2018"
 name = "ecp-controller"
 required-features = ["ham-xpt", "rpi"]
 
+[[bin]]
+name = "bt"
+required-featuers = ["bluetooth"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
-default = ["ham-xpt"]
+default = ["ham-xpt", "bluetooth"]
 
 ham-xpt = ["ham"]
 rpi = ["rs_ws281x"]
+bluetooth = ["rustable"]
 
 [dependencies]
-ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }
-rs_ws281x = { version = "0.2.3", optional=true }
 clap = "2.33.0"
 gpio-cdev = "0.2.0"
+#ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }
+ham = { path="/home/cmaves/ham", optional = true }
+rs_ws281x = { version = "0.2.3", optional=true }
+rustable = { path = "/home/cmaves/rustable", optional=true }
 spidev = "0.4.0"
 
 [dev-dependencies]
