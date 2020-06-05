@@ -19,11 +19,22 @@ fn ecp_uuid_rc() -> Rc<str> {
 enum BMsg {
     SendMsg(Vec<LedMsg>, Instant),
     Alive,
-    Terminate
+    Terminate,
 }
 
 fn ecp_bufs() -> [UUID; 10] {
-	let mut ret = ["".into(), "".into(), "".into(), "".into(), "".into(), "".into(), "".into(), "".into(), "".into(), "".into()];
+    let mut ret = [
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+        "".into(),
+    ];
     for (i, v) in ret.iter_mut().enumerate() {
         *v = ecp_buf1(i as u8);
     }
