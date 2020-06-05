@@ -1,18 +1,13 @@
-use super::{ecp_uuid_rc, BMsg, ECP_UUID};
+use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Sender};
-use rustable::gatt::{CharFlags, Charactersitic, LocalCharBase, LocalServiceBase, Service};
-use rustable::{Bluetooth as BT, ValOrFn, UUID};
+use rustable::gatt::{CharFlags, Characteristic, LocalCharBase, LocalServiceBase, Service};
+use rustable::{Bluetooth as BT, Device, ValOrFn, UUID};
 use std::rc::Rc;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::{sleep, spawn, JoinHandle};
 use std::time::{Duration, Instant};
 
-const ECP_BUF1_BASE: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb340";
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb349";
-fn ecp_buf1(u: u8) -> UUID {
-    debug_assert!(u < 16);
-    format!("{}{:x}", &ECP_BUF1_BASE[..35], u).into()
-}
 
 struct Bluetooth<'a, 'b> {
     blue: BT<'a, 'b>,
@@ -37,17 +32,14 @@ impl Bluetooth<'_, '_> {
     }
 
     fn init_service(&mut self) -> Result<(), Error> {
-        let mut sender_service = LocalServiceBase::new(&ECP_UUID, true);
+        let mut sender_service = LocalServiceBase::new(ECP_UUID, true);
         let mut flags = CharFlags::default();
         flags.broadcast = true;
         flags.read = true;
         flags.notify = true;
         flags.indicate = false;
-        for i in 0_u8..10 {
-            let mut char_str = ECP_BUF1_BASE.to_string();
-            char_str.pop();
-            char_str.push((0x30 + i) as char);
-            sender_service.add_char(LocalCharBase::new(char_str, flags));
+        for uuid in &ecp_bufs() {
+            sender_service.add_char(LocalCharBase::new(uuid, flags));
         }
         self.blue.add_service(sender_service)?;
         self.blue.register_application()?;
@@ -100,7 +92,7 @@ impl BluetoothSender {
                             }
 
                             // write out the dirty characteristics and
-                            let mut service = bt.blue.local_service(&ECP_UUID).unwrap();
+                            let mut service = bt.blue.get_service(ECP_UUID).unwrap();
                             for (i, &d) in dirty.iter().enumerate() {
                                 if d {
                                     let mut msgs = [LedMsg::default(); 31];
@@ -134,7 +126,7 @@ impl BluetoothSender {
                                 );
                                 (buf, 4)
                             };
-                            let mut character = service.get_char(&ECP_TIME).unwrap();
+                            let mut character = service.get_char(ECP_TIME).unwrap();
                             let (new_time, new_len) = time_fn();
                             let mut val = ValOrFn::Function(Box::new(time_fn));
                             character.write_val_or_fn(&mut val);

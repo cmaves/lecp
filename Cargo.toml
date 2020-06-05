@@ -6,11 +6,7 @@ edition = "2018"
 
 [[bin]]
 name = "ecp-controller"
-required-features = ["ham-xpt", "rpi"]
-
-[[bin]]
-name = "bt"
-required-featuers = ["bluetooth"]
+required-features = ["rpi"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [features]
