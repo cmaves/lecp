@@ -1,4 +1,4 @@
-use super::{ecp_bufs, BMsg, ECP_BUF1_BASE, ECP_UUID};
+use super::{ecp_bufs, BMsg, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Receiver};
 use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service};
 use rustable::interfaces::{BLUEZ_DEST, MANGAGED_OBJ_CALL, OBJ_MANAGER_IF_STR};
@@ -6,7 +6,7 @@ use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::thread::{sleep, spawn, JoinHandle};
+use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
 
 struct Bluetooth<'a, 'b> {
@@ -57,7 +57,7 @@ enum RecvMsg {
 pub struct BluetoothReceiver {
     send_bmsg: mpsc::SyncSender<BMsg>,
     recv_msgs: mpsc::Receiver<RecvMsg>,
-    handle: JoinHandle<Result<(), Error>>,
+    handle: Status,
     time: u32,
     time_inst: Instant,
 }
@@ -66,7 +66,7 @@ impl BluetoothReceiver {
     pub fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let (send_bmsg, recv_bmsg) = mpsc::sync_channel(1);
         let (send_msgs, recv_msgs) = mpsc::sync_channel(1);
-        let handle = spawn(move || {
+        let handle = Status::Running(spawn(move || {
             let mut blue = Bluetooth::new(blue_path, verbose)?;
             println!("Waiting for device to connect...");
             let to = Duration::from_secs(60);
@@ -184,7 +184,7 @@ impl BluetoothReceiver {
                     }
                 }
             }
-        });
+        }));
         let ret = BluetoothReceiver {
             send_bmsg,
             recv_msgs,
@@ -192,7 +192,27 @@ impl BluetoothReceiver {
             time: 0,
             time_inst: Instant::now(),
         };
-        Ok(ret)
+        if ret.is_alive() {
+            Ok(ret)
+        } else {
+            Err(ret.terminate().unwrap_err())
+        }
+    }
+    fn is_alive(&self) -> bool {
+        self.send_bmsg.send(BMsg::Alive).is_ok()
+    }
+    fn terminate(self) -> Result<(), Error> {
+        self.send_bmsg.send(BMsg::Terminate).ok();
+        match self.handle {
+            Status::Running(handle) => match handle.join() {
+                Ok(_) => Ok(()),
+                Err(err) => Err(Error::Unrecoverable(format!(
+                    "DBus bluetooth thread panicked with: {:?}",
+                    err
+                ))),
+            },
+            Status::Terminated => Err(Error::BadInput("Thread already terminated".to_string())),
+        }
     }
 }
 
@@ -218,30 +238,26 @@ impl Receiver for BluetoothReceiver {
                 Err(e) => {
                     return Err(match e {
                         mpsc::RecvTimeoutError::Timeout => Error::Timeout("".to_string()),
-                        mpsc::RecvTimeoutError::Disconnected => {
-                            Error::Unrecoverable("Receiver thread is disconnected!".to_string())
-                        }
+                        mpsc::RecvTimeoutError::Disconnected => match &self.handle {
+                            Status::Running(_) => {
+                                let mut handle = Status::Terminated;
+                                std::mem::swap(&mut self.handle, &mut handle);
+                                match handle {
+                                    Status::Running(handle) => handle.join().unwrap().unwrap_err(),
+                                    Status::Terminated => unreachable!(),
+                                }
+                            }
+                            Status::Terminated => {
+                                Error::Unrecoverable("Receiver thread is disconnected!".to_string())
+                            }
+                        },
                     })
                 }
             }
         }
     }
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
-        loop {
-            match self.recv_msgs.recv() {
-                Ok(recv_msg) => match recv_msg {
-                    RecvMsg::LedMsgs(msgs) => return Ok(msgs),
-                    RecvMsg::Time(time, inst) => {
-                        self.time = time;
-                        self.time_inst = inst;
-                    }
-                },
-                Err(_) => {
-                    return Err(Error::Unrecoverable(
-                        "Receiver thread is disconnected!".to_string(),
-                    ))
-                }
-            }
-        }
+        let dur = Duration::from_secs(std::u64::MAX);
+        self.recv_to(dur)
     }
 }

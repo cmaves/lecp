@@ -1,6 +1,7 @@
-use crate::LedMsg;
+use crate::{Error, LedMsg};
 use rustable::UUID;
 use std::rc::Rc;
+use std::thread::JoinHandle;
 use std::time::Instant;
 
 mod bluetooth_receiver;
@@ -15,7 +16,10 @@ const ECP_BUF1_BASE: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb340";
 fn ecp_uuid_rc() -> Rc<str> {
     ECP_UUID.into()
 }
-
+enum Status {
+    Running(JoinHandle<Result<(), Error>>),
+    Terminated,
+}
 enum BMsg {
     SendMsg(Vec<LedMsg>, Instant),
     Alive,

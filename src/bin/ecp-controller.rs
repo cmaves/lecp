@@ -1,7 +1,8 @@
 use clap::{App, Arg, ArgMatches};
 use ecp::bluetooth::BluetoothReceiver;
 use ecp::color::Color;
-use ecp::controller::Renderer;
+use ecp::controller::{Controller, Renderer};
+use ecp::Receiver;
 use gpio_cdev::Chip;
 use ham::rfm69::Rfm69;
 use ham::{IntoPacketReceiver, PacketReceiver};
@@ -14,6 +15,8 @@ use std::time::Instant;
 pub fn main() {
     let parser = parser();
     let args = parser.get_matches();
+    let pin = u8::from_str(args.value_of("led_pin").unwrap()).unwrap() as i32;
+    let count = u16::from_str(args.value_of("led_count").unwrap()).unwrap() as i32;
     let channel = rs_ws281x::ChannelBuilder::new()
         .pin(pin)
         .strip_type(rs_ws281x::StripType::Ws2812)
@@ -28,12 +31,13 @@ pub fn main() {
 
     let mode = args.value_of("mode").unwrap();
     let verbose = args.occurrences_of("verbose") as u8;
-    let mut renderer = match mode {
+    match mode {
         "bluetooth" => {
             #[cfg(feature = "bluetooth")]
             {
                 let recv = BluetoothReceiver::new("/org/bluez/hci0".to_string(), verbose).unwrap();
-                Renderer::new(recv, ctl)
+                let renderer = Renderer::new(recv, ctl);
+                render(renderer, verbose);
             }
             #[cfg(not(feature = "bluetooth"))]
             {
@@ -41,8 +45,8 @@ pub fn main() {
             }
         }
         "ham" => {
-            let pin = u8::from_str(args.value_of("led_pin").unwrap()).unwrap() as i32;
-            let count = u16::from_str(args.value_of("led_count").unwrap()).unwrap() as i32;
+            // let pin = u8::from_str(args.value_of("led_pin").unwrap()).unwrap() as i32;
+            // let count = u16::from_str(args.value_of("led_count").unwrap()).unwrap() as i32;
             let mut chip = Chip::new("/dev/gpiochip0").unwrap();
             let en = chip
                 .get_line(u32::from_str(args.value_of("en").unwrap()).unwrap())
@@ -55,9 +59,13 @@ pub fn main() {
             rfm.set_bitrate(45000).unwrap();
             let mut recv = rfm.into_packet_receiver().unwrap();
             recv.start().unwrap();
-            Renderer::new(recv, ctl)
+            let renderer = Renderer::new(recv, ctl);
+            render(renderer, verbose);
         }
+        _ => unreachable!(),
     };
+}
+fn render<R: Receiver, C: Controller>(mut renderer: Renderer<R, C>, verbose: u8) {
     renderer.blend = 3;
     renderer.verbose = verbose;
     renderer.color_map[2] = Color::YELLOW;
@@ -75,7 +83,7 @@ fn parser<'a, 'b>() -> App<'a, 'b> {
                 .short("m")
                 .long("mode")
                 .value_name("MODE")
-                .possible_values(["bluetooth, ham"])
+                .possible_values(&["bluetooth", "ham"])
                 .help("Control what source to use for light messages")
                 .default_value("bluetooth")
                 .takes_value(true),
