@@ -54,16 +54,20 @@ impl Bluetooth<'_, '_> {
         Ok(())
     }
 }
-
+enum Status {
+	Running(JoinHandle<Result<(), Error>>),
+	Terminated
+}
 pub struct BluetoothSender {
     sender: SyncSender<BMsg>,
-    handle: JoinHandle<Result<(), Error>>,
+    handle: Status,
 }
 impl BluetoothSender {
     pub fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let (sender, recv) = sync_channel(1);
-        let handle = spawn(move || {
+        let handle = Status::Running(spawn(move || {
             let mut bt = Bluetooth::new(blue_path, verbose)?;
+			let ecp_bufs = ecp_bufs();
             loop {
                 bt.process_requests()?;
                 match recv.try_recv() {
@@ -91,6 +95,7 @@ impl BluetoothSender {
                                 }
                             }
 
+							// eprintln!("dirty received: {:?}", dirty);
                             // write out the dirty characteristics and
                             let mut service = bt.blue.get_service(ECP_UUID).unwrap();
                             for (i, &d) in dirty.iter().enumerate() {
@@ -98,18 +103,22 @@ impl BluetoothSender {
                                     let mut msgs = [LedMsg::default(); 31];
                                     let (start, end) = (i * 31, (i + 1) * 31);
                                     let mut count = 0;
+									//eprintln!("bt.msgs[start..end]: {:?}", &bt.msgs[start..end]);
                                     for msg in &bt.msgs[start..end] {
                                         if let Some(msg) = msg {
                                             msgs[count] = *msg;
                                             count += 1;
                                         }
                                     }
+									//eprintln!("msgs[..count]: {:?}", &msgs[..count]);
                                     let mut buf = [0; 255];
                                     let (len, _) = LedMsg::serialize(&msgs[..count], &mut buf);
+									//eprintln!("buf[..len]: {:?}", &buf[..len]);
+									//eprintln!("ecp_bufs[i]: {:?}", &ecp_bufs[i]);
                                     let mut character =
-                                        service.get_char(&ecp_buf1(i as u8)).unwrap();
+                                        service.get_char(&ecp_bufs[i]).unwrap();
                                     character.write(&buf[..len])?;
-                                    drop(character);
+									character.notify()?;
                                 }
                             }
                             let cur_time = bt.time;
@@ -159,7 +168,7 @@ impl BluetoothSender {
                     }
                 }
             }
-        });
+        }));
         sleep(Duration::from_millis(500));
         let ret = BluetoothSender { sender, handle };
         if ret.is_alive() {
@@ -173,13 +182,13 @@ impl BluetoothSender {
     }
     pub fn terminate(self) -> Result<(), Error> {
         self.sender.send(BMsg::Terminate);
-        match self.handle.join() {
-            Ok(res) => res,
-            Err(err) => Err(Error::Unrecoverable(format!(
-                "DBus bluetooth thread panicked with: {:?}",
-                err
-            ))),
-        }
+		match self.handle {
+        	Status::Running(handle) =>match handle.join() {
+				Ok(_) => Ok(()),
+            	Err(err) => Err(Error::Unrecoverable(format!("DBus bluetooth thread panicked with: {:?}", err)))
+        	},
+			Status::Terminated => Err(Error::BadInput("Thread already terminated".to_string()))
+		}
     }
 }
 
@@ -187,11 +196,21 @@ impl Sender for BluetoothSender {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
         let start = Instant::now();
         let msg_vec = Vec::from(msgs);
-        self.sender
-            .send(BMsg::SendMsg(msg_vec, start))
-            .map_err(|_| {
-                Error::Unrecoverable("BluetoothSender: Sending thread is disconnected!".to_string())
-            })?;
-        Ok(())
-    }
+        match self.sender.send(BMsg::SendMsg(msg_vec, start)) {
+			Ok(()) => Ok(()),
+			Err(_) =>  {
+				match self.handle {
+					Status::Running(_) => {
+						let mut handle = Status::Terminated;
+						std::mem::swap(&mut handle, &mut self.handle);
+						match handle {
+							Status::Running(handle) => handle.join().unwrap(),
+							Status::Terminated => unreachable!()
+						}
+					},
+                	Status::Terminated => Err(Error::Unrecoverable("BluetoothSender: Sending thread is disconnected!".to_string()))
+				}
+			}
+		}
+	}
 }
