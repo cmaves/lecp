@@ -9,24 +9,25 @@ use std::sync::mpsc;
 use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
 
-struct Bluetooth<'a, 'b> {
-    blue: BT<'a, 'b>,
+struct Bluetooth {
+    blue: BT,
     verbose: u8,
 }
 
-impl Bluetooth<'_, '_> {
+impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("ecp_recv", blue_path)?;
         blue.verbose = verbose.saturating_sub(1);
-        let ret = Bluetooth { blue, verbose };
-
+        let mut ret = Bluetooth { blue, verbose };
+        ret.blue.filter_dest = None;
         Ok(ret)
     }
     fn find_any_device(&mut self, timeout: Duration) -> Result<MAC, Error> {
         let mut adv = Advertisement::new(AdType::Peripheral, "ecp-device".to_string());
         let ecp_uuid: [UUID; 1] = [ECP_UUID.into()];
         adv.solicit_uuids = Vec::from(&ecp_uuid[..]);
-        self.blue.start_advertise(adv)?;
+        let ad_idx = self.blue.start_advertise(adv)?;
+        self.blue.set_discoverable(true)?;
         let tar = Instant::now() + timeout;
         let sleep_dur = Duration::from_secs(1);
         loop {
@@ -37,6 +38,7 @@ impl Bluetooth<'_, '_> {
                 let ecp_uuid: Rc<str> = ECP_UUID.into();
                 if device.has_service(&ecp_uuid) {
                     if device.connected() {
+                        self.blue.remove_advertise(ad_idx)?;
                         return Ok(device_mac);
                     }
                 }
@@ -140,7 +142,6 @@ impl BluetoothReceiver {
                             break;
                         }
                     };
-                    let zero = Duration::from_secs(0);
                     let mut msgs = Vec::new();
                     for fd_idx in ready {
                         let (v, l) = ecp_service
@@ -192,6 +193,7 @@ impl BluetoothReceiver {
             time: 0,
             time_inst: Instant::now(),
         };
+        ret.is_alive();
         if ret.is_alive() {
             Ok(ret)
         } else {
@@ -205,7 +207,7 @@ impl BluetoothReceiver {
         self.send_bmsg.send(BMsg::Terminate).ok();
         match self.handle {
             Status::Running(handle) => match handle.join() {
-                Ok(_) => Ok(()),
+                Ok(ret) => ret,
                 Err(err) => Err(Error::Unrecoverable(format!(
                     "DBus bluetooth thread panicked with: {:?}",
                     err

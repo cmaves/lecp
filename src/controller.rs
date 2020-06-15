@@ -72,21 +72,16 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
     }
     pub fn update_leds(&mut self) -> Result<(), Error> {
         // append values to list of msg
-        for msgs in self.recv.try_iter() {
-            self.msgs.extend(msgs)
-        }
-        if self.msgs.len() == 0 {
+        loop {
             match self.recv.try_recv() {
                 Ok(msgs) => self.msgs.extend(msgs),
-                Err(e) => {
-                    if let Error::Timeout(_) = e {
-                        return Ok(());
-                    } else {
-                        return Err(e);
-                    }
+                Err(e) => match e {
+                    Error::Timeout(_) => break,
+                    _ => return Err(e),
                 }
             }
         }
+        // TODO: can we early terminate here?
         let mut elements = [None; 256];
         let mut last_active = 0;
         let mut first_active = 256;

@@ -9,14 +9,14 @@ use std::time::{Duration, Instant};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb349";
 
-struct Bluetooth<'a, 'b> {
-    blue: BT<'a, 'b>,
+struct Bluetooth {
+    blue: BT,
     time: u32,
     last_set: Instant,
     msgs: [Option<LedMsg>; 256],
 }
 
-impl Bluetooth<'_, '_> {
+impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("ecp", blue_path)?;
         blue.verbose = verbose;
@@ -166,6 +166,7 @@ impl BluetoothSender {
         }));
         sleep(Duration::from_millis(500));
         let ret = BluetoothSender { sender, handle };
+        ret.is_alive();
         if ret.is_alive() {
             Ok(ret)
         } else {
@@ -176,10 +177,10 @@ impl BluetoothSender {
         self.sender.send(BMsg::Alive).is_ok()
     }
     pub fn terminate(self) -> Result<(), Error> {
-        self.sender.send(BMsg::Terminate);
+        self.sender.send(BMsg::Terminate).ok();
         match self.handle {
             Status::Running(handle) => match handle.join() {
-                Ok(_) => Ok(()),
+                Ok(ret) => ret,
                 Err(err) => Err(Error::Unrecoverable(format!(
                     "DBus bluetooth thread panicked with: {:?}",
                     err
