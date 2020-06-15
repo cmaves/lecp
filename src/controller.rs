@@ -78,7 +78,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                 Err(e) => match e {
                     Error::Timeout(_) => break,
                     _ => return Err(e),
-                }
+                },
             }
         }
         // TODO: can we early terminate here?
