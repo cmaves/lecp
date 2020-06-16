@@ -8,6 +8,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
+use std::os::unix::io::RawFd;
 
 struct Bluetooth {
     blue: BT,
@@ -24,6 +25,9 @@ impl Bluetooth {
     }
     fn find_any_device(&mut self, timeout: Duration) -> Result<MAC, Error> {
         let mut adv = Advertisement::new(AdType::Peripheral, "ecp-device".to_string());
+        let sec = timeout.as_secs().min(std::u16::MAX as u64) as u16;
+        adv.duration = sec;
+        adv.timeout = sec;
         let ecp_uuid: [UUID; 1] = [ECP_UUID.into()];
         adv.solicit_uuids = Vec::from(&ecp_uuid[..]);
         let ad_idx = self.blue.start_advertise(adv)?;
@@ -38,15 +42,21 @@ impl Bluetooth {
                 let ecp_uuid: Rc<str> = ECP_UUID.into();
                 if device.has_service(&ecp_uuid) {
                     if device.connected() {
-                        self.blue.remove_advertise(ad_idx)?;
+                        // self.blue.remove_advertise(ad_idx)?;
                         return Ok(device_mac);
                     }
                 }
             }
+            
+            // do-while terminate check
             if tar.checked_duration_since(Instant::now()).is_none() {
+                // self.blue.remove_advertise(ad_idx)?;
                 return Err(Error::Timeout("Finding device timed out".to_string()));
             } else {
-                sleep(sleep_dur);
+                let target = Instant::now() + sleep_dur;
+                while target.checked_duration_since(Instant::now()).is_some() {
+                    self.blue.process_requests()?;
+                }
             }
         }
     }
@@ -97,13 +107,16 @@ impl BluetoothReceiver {
                 };
                 let ecp_uuid: UUID = ECP_UUID.into();
                 let ecp_bufs = ecp_bufs();
-                let fds = if let Some(mut ecp_service) = device.get_service(&ecp_uuid) {
-                    let mut fds = Vec::with_capacity(10);
+                let mut fds: [RawFd; 10] = [0; 10];
+                if let Some(mut ecp_service) = device.get_service(&ecp_uuid) {
+                    // let mut fds = Vec::with_capacity(10);
+                    let mut count = 0;
                     for uuid in &ecp_bufs {
                         if let Some(mut r_char) = ecp_service.get_char(uuid) {
                             match r_char.acquire_notify() {
                                 Ok(fd) => {
-                                    fds.push(fd);
+                                    fds[count] = fd;
+                                    count += 1
                                 }
                                 Err(e) => {
                                     eprintln!("Error acquiring notify fd: {:?}", e);
@@ -114,7 +127,7 @@ impl BluetoothReceiver {
                             break;
                         }
                     }
-                    if fds.len() != 10 {
+                    if count != 10 {
                         continue;
                     }
                     fds
@@ -122,6 +135,10 @@ impl BluetoothReceiver {
                     continue;
                 };
 
+                println!("Bluetooth device connected, starting message reception.");
+                if verbose >= 3 {
+                    eprintln!("Fds: {:?}", fds);
+                }
                 // loop over incoming notification and continue to
                 let mut poller = NotifyPoller::new(&fds);
                 loop {
