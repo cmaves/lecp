@@ -159,6 +159,9 @@ impl BluetoothReceiver {
                             break;
                         }
                     };
+                    if verbose >= 3 {
+                        eprintln!("Ready fds: {:?}", ready);
+                    }
                     let mut msgs = Vec::new();
                     for fd_idx in ready {
                         let (v, l) = ecp_service
@@ -193,12 +196,17 @@ impl BluetoothReceiver {
                             }
                         }
                     }
+                    if msgs.len() == 0 {
+                    if verbose >= 3 {
+                        eprintln!("LedMsgs to be send: {:?}", msgs);
+                    }
                     if let Err(e) = send_msgs.try_send(RecvMsg::LedMsgs(msgs)) {
                         if let mpsc::TrySendError::Disconnected(_) = e {
                             return Err(Error::Unrecoverable(
                                 "Receiver is disconnected".to_string(),
                             ));
                         }
+                    }
                     }
                 }
             }

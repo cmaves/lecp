@@ -149,8 +149,7 @@ impl LedMsg {
                     Command::FlatStack(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
                     1,
                 ),
-
-                _ => unreachable!(),
+                v => return Err(Error::BadInput(format!("Unknown command was given: {:#04X}", v)))
             };
             let msg = LedMsg {
                 cur_time,
