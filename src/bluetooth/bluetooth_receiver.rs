@@ -4,11 +4,12 @@ use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service};
 use rustable::interfaces::{BLUEZ_DEST, MANGAGED_OBJ_CALL, OBJ_MANAGER_IF_STR};
 use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
+use std::os::unix::io::RawFd;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
-use std::os::unix::io::RawFd;
+use nix::poll::PollFlags;
 
 struct Bluetooth {
     blue: BT,
@@ -24,33 +25,46 @@ impl Bluetooth {
         Ok(ret)
     }
     fn find_any_device(&mut self, timeout: Duration) -> Result<MAC, Error> {
+        // do initial check for service
+        let ecp_uuid: Rc<str> = ECP_UUID.into();
+        self.blue.discover_devices()?;
+        for device_mac in self.blue.devices() {
+            let device = self.blue.get_device(&device_mac).unwrap();
+            if device.has_service(&ecp_uuid) {
+                if device.connected() {
+                    return Ok(device_mac);
+                }
+            }
+        }
+        // register advertisement and set discoverable true
         let mut adv = Advertisement::new(AdType::Peripheral, "ecp-device".to_string());
         let sec = timeout.as_secs().min(std::u16::MAX as u64) as u16;
         adv.duration = sec;
         adv.timeout = sec;
-        let ecp_uuid: [UUID; 1] = [ECP_UUID.into()];
-        adv.solicit_uuids = Vec::from(&ecp_uuid[..]);
-        let ad_idx = self.blue.start_advertise(adv)?;
+        adv.solicit_uuids = Vec::from(&[ecp_uuid.clone()][..]);
+        let ad_idx = self.blue.start_advertise(adv).ok();
         self.blue.set_discoverable(true)?;
+
+        // init the im
         let tar = Instant::now() + timeout;
         let sleep_dur = Duration::from_secs(1);
+        // perform a do-while loop checking for matching devices
         loop {
             self.blue.discover_devices()?;
             let devices = self.blue.devices();
             for device_mac in devices {
                 let device = self.blue.get_device(&device_mac).unwrap();
-                let ecp_uuid: Rc<str> = ECP_UUID.into();
                 if device.has_service(&ecp_uuid) {
                     if device.connected() {
-                        // self.blue.remove_advertise(ad_idx)?;
+                        if let Some(idx) = ad_idx { self.blue.remove_advertise_no_dbus(idx).ok(); }
                         return Ok(device_mac);
                     }
                 }
             }
-            
+
             // do-while terminate check
             if tar.checked_duration_since(Instant::now()).is_none() {
-                // self.blue.remove_advertise(ad_idx)?;
+                if let Some(idx) = ad_idx { self.blue.remove_advertise_no_dbus(idx).ok(); }
                 return Err(Error::Timeout("Finding device timed out".to_string()));
             } else {
                 let target = Instant::now() + sleep_dur;
@@ -60,6 +74,48 @@ impl Bluetooth {
             }
         }
     }
+    // Panics if the mac is non existent or ECP service is not avaliable on device
+    fn collect_notify_fds(&mut self, mac: &MAC) -> Result<NotifyPoller, rustable::Error> {
+        let mut device = if let Some(device) = self.blue.get_device(&mac) {
+            device
+        } else {
+            unreachable!()
+        };
+        let ecp_uuid: UUID = ECP_UUID.into();
+        let ecp_bufs = ecp_bufs();
+        if let Some(mut ecp_service) = device.get_service(&ecp_uuid) {
+            // let mut fds = Vec::with_capacity(10);
+            let mut count = 0;
+            let mut fds: [RawFd; 10] = [0; 10];
+            for uuid in &ecp_bufs {
+                if let Some(mut r_char) = ecp_service.get_char(uuid) {
+                    match r_char.acquire_notify() {
+                        Ok(fd) => {
+                            fds[count] = fd;
+                            count += 1
+                        }
+                        Err(e) => {
+                            eprintln!("Error acquiring notify fd: {:?}", e);
+                            break;
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
+            if count == 10 {
+                Ok(NotifyPoller::new(&fds))
+            } else {
+                Err(rustable::Error::DbusReqErr(format!("Failed to get notify for {}", ecp_bufs[count])))
+            }
+        } else {
+            unreachable!()
+        }
+    }
+    /*
+    fn poll_for_msgs(&mut self) -> Result<Vec<LedMsg>, Error> {
+
+    }*/
 }
 
 enum RecvMsg {
@@ -82,6 +138,8 @@ impl BluetoothReceiver {
             let mut blue = Bluetooth::new(blue_path, verbose)?;
             println!("Waiting for device to connect...");
             let to = Duration::from_secs(60);
+            let ecp_uuid: UUID = ECP_UUID.into();
+            let ecp_bufs = ecp_bufs();
             loop {
                 let mac = loop {
                     match blue.find_any_device(to) {
@@ -100,47 +158,22 @@ impl BluetoothReceiver {
                     }
                     println!("Still waiting for device to connect...");
                 };
-                let mut device = if let Some(device) = blue.blue.get_device(&mac) {
-                    device
-                } else {
-                    continue;
-                };
-                let ecp_uuid: UUID = ECP_UUID.into();
-                let ecp_bufs = ecp_bufs();
-                let mut fds: [RawFd; 10] = [0; 10];
-                if let Some(mut ecp_service) = device.get_service(&ecp_uuid) {
-                    // let mut fds = Vec::with_capacity(10);
-                    let mut count = 0;
-                    for uuid in &ecp_bufs {
-                        if let Some(mut r_char) = ecp_service.get_char(uuid) {
-                            match r_char.acquire_notify() {
-                                Ok(fd) => {
-                                    fds[count] = fd;
-                                    count += 1
-                                }
-                                Err(e) => {
-                                    eprintln!("Error acquiring notify fd: {:?}", e);
-                                    break;
-                                }
-                            }
-                        } else {
-                            break;
+                println!("Bluetooth device connected, starting message reception.");
+                let mut poller = match blue.collect_notify_fds(&mac) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        if verbose >= 1 {
+                            eprintln!("Error occurred acquiring notify file descriptors: {:?}", e);
                         }
-                    }
-                    if count != 10 {
                         continue;
                     }
-                    fds
-                } else {
-                    continue;
                 };
 
-                println!("Bluetooth device connected, starting message reception.");
-                if verbose >= 3 {
-                    eprintln!("Fds: {:?}", fds);
-                }
+                /*if verbose >= 3 {
+                    eprintln!("Fds: {:?}", poller.fds)
+                }*/
                 // loop over incoming notification and continue to
-                let mut poller = NotifyPoller::new(&fds);
+                let zero = Duration::from_secs(0);
                 loop {
                     blue.blue.process_requests()?;
                     let mut device = match blue.blue.get_device(&mac) {
@@ -151,19 +184,28 @@ impl BluetoothReceiver {
                         Some(serv) => serv,
                         None => break,
                     };
-                    let zero = Duration::from_secs(0);
-                    let ready = match poller.poll(Some(zero)) {
-                        Ok(ready) => ready,
-                        Err(_) => {
-                            eprintln!("Polling error getting next device.");
-                            break;
-                        }
-                    };
+                    if let Err(_) = poller.poll(Some(zero)) {
+                      eprintln!("Polling error getting next device.");
+                      break;
+                    }
+
+                    let ready = poller.get_ready();
                     if verbose >= 3 {
                         eprintln!("Ready fds: {:?}", ready);
                     }
                     let mut msgs = Vec::new();
-                    for fd_idx in ready {
+                    let mut err_state = false;
+                    for &fd_idx in ready {
+                        if poller.get_flags(fd_idx).unwrap().contains(PollFlags::POLLERR) {
+                            println!("Notify file descriptor for {} is in error state.", ecp_bufs[fd_idx]);
+                            err_state = true;
+                            break;
+                        }
+                        if poller.get_flags(fd_idx).unwrap().contains(PollFlags::POLLHUP) {
+                            println!("Notify file descriptor for {} has hung up.", ecp_bufs[fd_idx]);
+                            err_state = true;
+                            break;
+                        }
                         let (v, l) = ecp_service
                             .get_char(&ecp_bufs[fd_idx])
                             .unwrap()
@@ -196,17 +238,22 @@ impl BluetoothReceiver {
                             }
                         }
                     }
+                    if err_state {
+                        // one of the notify fds is in an error state so try to find new device
+                        blue.blue.get_device(&mac).unwrap().forget_service(&ecp_uuid);
+                        break;
+                    }
                     if msgs.len() == 0 {
-                    if verbose >= 3 {
-                        eprintln!("LedMsgs to be send: {:?}", msgs);
-                    }
-                    if let Err(e) = send_msgs.try_send(RecvMsg::LedMsgs(msgs)) {
-                        if let mpsc::TrySendError::Disconnected(_) = e {
-                            return Err(Error::Unrecoverable(
-                                "Receiver is disconnected".to_string(),
-                            ));
+                        if verbose >= 3 {
+                            eprintln!("LedMsgs to be send: {:?}", msgs);
                         }
-                    }
+                        if let Err(e) = send_msgs.try_send(RecvMsg::LedMsgs(msgs)) {
+                            if let mpsc::TrySendError::Disconnected(_) = e {
+                                return Err(Error::Unrecoverable(
+                                    "Receiver is disconnected".to_string(),
+                                ));
+                            }
+                        }
                     }
                 }
             }

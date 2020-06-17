@@ -82,7 +82,9 @@ impl LedMsg {
     pub const MAX_LEN: usize = 1 + 2 + 4 + 1; // flags + color/elment + time + cmd_value
     fn deserialize(buf: &[u8]) -> Result<Vec<LedMsg>, Error> {
         let mut ret = Vec::new();
-        if buf.len() > 0 && buf.len() < 4 {
+        if buf.len() == 0 {
+            return Ok(Vec::new());
+        } else if buf.len() < 4 {
             return Err(Error::BadInput(
                 "Buffer is too short and doesn't contain time.".to_string(),
             ));
@@ -149,7 +151,12 @@ impl LedMsg {
                     Command::FlatStack(*buf.get(i + 3 + extra0).ok_or_else(extra_bytes)?),
                     1,
                 ),
-                v => return Err(Error::BadInput(format!("Unknown command was given: {:#04X}", v)))
+                v => {
+                    return Err(Error::BadInput(format!(
+                        "Unknown command was given: {:#04X}",
+                        v
+                    )))
+                }
             };
             let msg = LedMsg {
                 cur_time,
