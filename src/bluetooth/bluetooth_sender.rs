@@ -119,7 +119,7 @@ impl BluetoothSender {
                             let cur_time = bt.time;
                             let last_set = bt.last_set;
                             let time_fn = move || {
-                                let mut buf = [0; 255];
+                                let mut buf = [0; 512];
                                 buf[..4].copy_from_slice(
                                     &cur_time
                                         .wrapping_add(

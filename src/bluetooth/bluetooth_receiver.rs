@@ -16,6 +16,11 @@ struct Bluetooth {
     verbose: u8,
 }
 
+fn parse_time_signal(v: &[u8]) -> u32 {
+                                let mut bytes = [0; 4];
+                                bytes.copy_from_slice(v);
+                                u32::from_be_bytes(bytes)
+}
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("ecp_recv", blue_path)?;
@@ -43,6 +48,7 @@ impl Bluetooth {
         adv.timeout = sec;
         adv.solicit_uuids = Vec::from(&[ecp_uuid.clone()][..]);
         let ad_idx = self.blue.start_advertise(adv).ok();
+        self.blue.set_power(true)?;
         self.blue.set_discoverable(true)?;
 
         // init the im
@@ -172,9 +178,49 @@ impl BluetoothReceiver {
                 /*if verbose >= 3 {
                     eprintln!("Fds: {:?}", poller.fds)
                 }*/
+                // read initial time signal
+                    let mut device = match blue.blue.get_device(&mac) {
+                        Some(dev) => dev,
+                        None => continue,
+                    };
+                    let mut ecp_service = match device.get_service(&ecp_uuid) {
+                        Some(serv) => serv,
+                        None => continue,
+                    };
+                    let mut time_char = match ecp_service.get_char(&ecp_bufs[9]) {
+                        Some(ch) => ch,
+                        None => continue
+                    };
+                match time_char.read() {
+                    Ok((v, l)) => {
+                        if l == 4 {
+                            let now = Instant::now();
+                            let time = parse_time_signal(&v[..4]);
+                            if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
+                                    return Err(Error::Unrecoverable(
+                                        "Receiver is disconnected".to_string(),
+                                    ));
+                                }
+                        } else {
+                            eprintln!("Expected time characteristic to be over length 4 (was {}).", l);
+                            continue
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Error reading initial time characteristic: {:?}", e);
+                        continue;
+                    }
+                }
                 // loop over incoming notification and continue to
                 let zero = Duration::from_secs(0);
                 loop {
+                   for bmsg in recv_bmsg.try_iter() {
+                        match bmsg {
+                            BMsg::Alive => (),
+                            BMsg::Terminate => return Ok(()),
+                            _ => unreachable!(),
+                        }
+                    }
                     blue.blue.process_requests()?;
                     let mut device = match blue.blue.get_device(&mac) {
                         Some(dev) => dev,
@@ -216,9 +262,7 @@ impl BluetoothReceiver {
                             // time signal
                             let now = Instant::now();
                             if l == 4 {
-                                let mut bytes = [0; 4];
-                                bytes.copy_from_slice(&v[..4]);
-                                let time = u32::from_be_bytes(bytes);
+                                let time = parse_time_signal(&v[..4]);
                                 if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
                                     return Err(Error::Unrecoverable(
                                         "Receiver is disconnected".to_string(),
@@ -228,13 +272,29 @@ impl BluetoothReceiver {
                         } else {
                             // normal signal
                             let offset = (31 * fd_idx) as u8;
-                            if let Ok(received) = LedMsg::deserialize(&v[..l]) {
-                                msgs.extend(received.into_iter().map(|mut msg| {
-                                    msg.element = msg.element + offset;
-                                    msg
-                                }));
-                            } else if verbose >= 2 {
-                                eprintln!("LedMsgs failed to deserialize; skipping...");
+                            match LedMsg::deserialize(&v[..l]) {
+                                Ok(received) => {
+                                    let len = received.len();
+                                    for mut msg in received {
+                                        match msg.element.checked_add(offset) {
+                                            Some(val) => msg.element = val,
+                                            None => {
+                                                println!("Received to many msgs from characteristic {}!", ecp_bufs[fd_idx]);
+                                                err_state = true;
+                                                break;
+                                            }
+                                        }
+                                        msgs.push(msg);
+                                    }
+                                    if verbose >= 3 {
+                                        eprintln!("Deserialized msgs: {:?}", &msgs[msgs.len()-len..]);
+                                    }
+                                }
+                                Err(e) => if verbose >= 3 {
+                                    eprintln!("LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}", e, &v[..l]);
+                                } else if verbose >= 2 {
+                                    eprintln!("LedMsgs failed to deserialize: {:?}", e);
+                                }
                             }
                         }
                     }
@@ -243,7 +303,7 @@ impl BluetoothReceiver {
                         blue.blue.get_device(&mac).unwrap().forget_service(&ecp_uuid);
                         break;
                     }
-                    if msgs.len() == 0 {
+                    if msgs.len() != 0 {
                         if verbose >= 3 {
                             eprintln!("LedMsgs to be send: {:?}", msgs);
                         }

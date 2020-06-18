@@ -101,6 +101,8 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                     }
                     elements[e] = Some(i);
                 }
+            } else {
+                eprintln!("ignoring msg {} do to time constraints", i);
             }
         }
         let mut flat_stack = 0;
@@ -137,6 +139,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                 }
             }
         }
+        if self.verbose >= 3 {
+            eprintln!("work buf: {:?}", self.work_buf);
+        }
         let mut changed = false;
         for (led, src) in leds.iter_mut().zip(self.work_buf.iter()) {
             if self.blend == 0 && *led != *src {
@@ -156,6 +161,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                     }
                 }
             }
+        }
+        if self.verbose >= 3 {
+            eprintln!("Led buf: {:?}", leds)
         }
         /*
         for (i, led) in leds.iter_mut().enumerate() {

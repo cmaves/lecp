@@ -1,6 +1,6 @@
 use clap::{App, Arg, ArgMatches};
 use ecp::bluetooth::BluetoothReceiver;
-use ecp::color::Color;
+use ecp::color::{Color, ColorMap};
 use ecp::controller::{Controller, Renderer};
 use ecp::Receiver;
 use gpio_cdev::Chip;
@@ -31,12 +31,21 @@ pub fn main() {
 
     let mode = args.value_of("mode").unwrap();
     let verbose = args.occurrences_of("verbose") as u8;
+    let mut color_map = ColorMap::default();
+    color_map[2] = Color::YELLOW;
+    color_map[3] = Color::GREEN;
+    color_map[4] = Color::BLUE;
+    let brightness = u8::from_str(args.value_of("brightness").unwrap()).unwrap() as f32 / 255.0;
+    for color in color_map[0..5].iter_mut() {
+        *color *= brightness;
+    }
     match mode {
         "bluetooth" => {
             #[cfg(feature = "bluetooth")]
             {
                 let recv = BluetoothReceiver::new("/org/bluez/hci0".to_string(), verbose).unwrap();
-                let renderer = Renderer::new(recv, ctl);
+                let mut renderer = Renderer::new(recv, ctl);
+                renderer.color_map = color_map;
                 render(renderer, verbose);
             }
             #[cfg(not(feature = "bluetooth"))]
@@ -102,6 +111,7 @@ fn parser<'a, 'b>() -> App<'a, 'b> {
             Arg::with_name("brightness")
                 .short("b")
                 .long("brightness")
+                .default_value("255")
                 .value_name("BRIGHTNESS")
                 .takes_value(true)
                 .validator(|s| {
