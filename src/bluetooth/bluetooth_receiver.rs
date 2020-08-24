@@ -23,10 +23,10 @@ fn parse_time_signal(v: &[u8]) -> u32 {
 }
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
-        let mut blue = BT::new("ecp_recv", blue_path)?;
+        let mut blue = BT::new("io.maves.ecp_receiver".to_string(), blue_path)?;
+		blue.set_filter(None)?;
         blue.verbose = verbose.saturating_sub(1);
         let mut ret = Bluetooth { blue, verbose };
-        ret.blue.filter_dest = None;
         Ok(ret)
     }
     fn find_any_device(&mut self, timeout: Duration) -> Result<MAC, Error> {
@@ -44,10 +44,10 @@ impl Bluetooth {
         // register advertisement and set discoverable true
         let mut adv = Advertisement::new(AdType::Peripheral, "ecp-device".to_string());
         let sec = timeout.as_secs().min(std::u16::MAX as u64) as u16;
-        adv.duration = sec;
+		adv.duration = 2;
         adv.timeout = sec;
         adv.solicit_uuids = Vec::from(&[ecp_uuid.clone()][..]);
-        let ad_idx = self.blue.start_advertise(adv).ok();
+        let ad_idx = self.blue.start_adv(adv).ok();
         self.blue.set_power(true)?;
         self.blue.set_discoverable(true)?;
 
@@ -63,7 +63,7 @@ impl Bluetooth {
                 if device.has_service(&ecp_uuid) {
                     if device.connected() {
                         if let Some(idx) = ad_idx {
-                            self.blue.remove_advertise_no_dbus(idx).ok();
+                            self.blue.remove_adv(idx).ok();
                         }
                         return Ok(device_mac);
                     }
@@ -73,7 +73,7 @@ impl Bluetooth {
             // do-while terminate check
             if tar.checked_duration_since(Instant::now()).is_none() {
                 if let Some(idx) = ad_idx {
-                    self.blue.remove_advertise_no_dbus(idx).ok();
+                    self.blue.remove_adv(idx);
                 }
                 return Err(Error::Timeout("Finding device timed out".to_string()));
             } else {
@@ -198,11 +198,11 @@ impl BluetoothReceiver {
                     Some(ch) => ch,
                     None => continue,
                 };
-                match time_char.read() {
-                    Ok((v, l)) => {
-                        if l == 4 {
+                match time_char.read_wait() {
+                    Ok(cv) => {
+                        if cv.len() == 4 {
                             let now = Instant::now();
-                            let time = parse_time_signal(&v[..4]);
+                            let time = parse_time_signal(&cv[..4]);
                             if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
                                 return Err(Error::Unrecoverable(
                                     "Receiver is disconnected".to_string(),
@@ -211,7 +211,7 @@ impl BluetoothReceiver {
                         } else {
                             eprintln!(
                                 "Expected time characteristic to be over length 4 (was {}).",
-                                l
+                                cv.len()
                             );
                             continue;
                         }
@@ -246,17 +246,15 @@ impl BluetoothReceiver {
                     }
 
                     let ready = poller.get_ready();
+                    let now = Instant::now();
                     if verbose >= 3 {
                         eprintln!("Ready fds: {:?}", ready);
                     }
                     let mut msgs = Vec::new();
                     let mut err_state = false;
                     for &fd_idx in ready {
-                        if poller
-                            .get_flags(fd_idx)
-                            .unwrap()
-                            .contains(PollFlags::POLLERR)
-                        {
+						let flags = poller.get_flags(fd_idx).unwrap();
+                        if flags.contains(PollFlags::POLLERR) 	{
                             println!(
                                 "Notify file descriptor for {} is in error state.",
                                 ecp_bufs[fd_idx]
@@ -264,11 +262,7 @@ impl BluetoothReceiver {
                             err_state = true;
                             break;
                         }
-                        if poller
-                            .get_flags(fd_idx)
-                            .unwrap()
-                            .contains(PollFlags::POLLHUP)
-                        {
+                        if flags.contains(PollFlags::POLLHUP) {
                             println!(
                                 "Notify file descriptor for {} has hung up.",
                                 ecp_bufs[fd_idx]
@@ -276,17 +270,16 @@ impl BluetoothReceiver {
                             err_state = true;
                             break;
                         }
-                        let (v, l) = ecp_service
+                        let value = ecp_service
                             .get_char(&ecp_bufs[fd_idx])
                             .unwrap()
                             .try_get_notify()
-                            .unwrap()
                             .unwrap();
+
                         if fd_idx == 9 {
                             // time signal
-                            let now = Instant::now();
-                            if l == 4 {
-                                let time = parse_time_signal(&v[..4]);
+                            if value.len() == 4 {
+                                let time = parse_time_signal(&value);
                                 if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
                                     return Err(Error::Unrecoverable(
                                         "Receiver is disconnected".to_string(),
@@ -296,7 +289,7 @@ impl BluetoothReceiver {
                         } else {
                             // normal signal
                             let offset = (31 * fd_idx) as u8;
-                            match LedMsg::deserialize(&v[..l]) {
+                            match LedMsg::deserialize(&value) {
                                 Ok(received) => {
                                     let len = received.len();
                                     for mut msg in received {
@@ -322,7 +315,7 @@ impl BluetoothReceiver {
                                 }
                                 Err(e) => {
                                     if verbose >= 3 {
-                                        eprintln!("LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}", e, &v[..l]);
+                                        eprintln!("LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}", e, &value);
                                     } else if verbose >= 2 {
                                         eprintln!("LedMsgs failed to deserialize: {:?}", e);
                                     }

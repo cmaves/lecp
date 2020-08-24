@@ -1,6 +1,6 @@
 use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Sender};
-use rustable::gatt::{CharFlags, Characteristic, LocalCharBase, LocalServiceBase, Service};
+use rustable::gatt::{CharFlags, Characteristic, LocalCharBase, LocalServiceBase, Service, CharValue};
 use rustable::{Bluetooth as BT, Device, ValOrFn, UUID};
 use std::rc::Rc;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
@@ -18,7 +18,8 @@ struct Bluetooth {
 
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
-        let mut blue = BT::new("ecp", blue_path)?;
+        let mut blue = BT::new("io.maves.ecp_sender".to_string(), blue_path)?;
+		blue.set_filter(None)?;
         blue.verbose = verbose;
         let mut ret = Bluetooth {
             blue,
@@ -26,7 +27,6 @@ impl Bluetooth {
             last_set: Instant::now(),
             msgs: [None; 256],
         };
-        ret.blue.filter_dest = None;
         ret.init_service()?;
         Ok(ret)
     }
@@ -119,8 +119,8 @@ impl BluetoothSender {
                             let cur_time = bt.time;
                             let last_set = bt.last_set;
                             let time_fn = move || {
-                                let mut buf = [0; 512];
-                                buf[..4].copy_from_slice(
+                                let mut ret = CharValue::default();
+								ret.extend_from_slice(
                                     &cur_time
                                         .wrapping_add(
                                             Instant::now().duration_since(last_set).as_micros()
@@ -128,15 +128,15 @@ impl BluetoothSender {
                                         )
                                         .to_be_bytes(),
                                 );
-                                (buf, 4)
+								ret
                             };
                             let mut character = service.get_char(ECP_TIME).unwrap();
-                            let (new_time, new_len) = time_fn();
+                            let new_time = time_fn();
                             let mut val = ValOrFn::Function(Box::new(time_fn));
                             character.write_val_or_fn(&mut val);
-                            let (old_time, old_len) = val.to_value();
-                            if old_len == 4 {
-                                debug_assert_eq!(4, new_len);
+                            let old_time = val.to_value();
+                            if old_time.len() == 4 {
+                                debug_assert_eq!(4, new_time.len());
                                 let mut new_buf = [0; 4];
                                 let mut old_buf = [0; 4];
                                 new_buf.copy_from_slice(&new_time[..4]);
