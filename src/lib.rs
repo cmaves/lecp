@@ -62,7 +62,10 @@ impl From<ham::Error> for Error {
 }
 impl From<rustable::Error> for Error {
     fn from(err: rustable::Error) -> Self {
-        Error::Bluetooth(err)
+        match err {
+            rustable::Error::Timeout => Error::Timeout("BLE timeout".to_string()),
+            _ => Error::Bluetooth(err),
+        }
     }
 }
 fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>

@@ -26,12 +26,8 @@ enum BMsg {
     Terminate,
 }
 
-fn ecp_bufs() -> [UUID; 10] {
+fn ecp_bufs() -> [UUID; 6] {
     let mut ret = [
-        "".into(),
-        "".into(),
-        "".into(),
-        "".into(),
         "".into(),
         "".into(),
         "".into(),

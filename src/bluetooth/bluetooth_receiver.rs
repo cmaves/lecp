@@ -24,7 +24,7 @@ fn parse_time_signal(v: &[u8]) -> u32 {
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("io.maves.ecp_receiver".to_string(), blue_path)?;
-		blue.set_filter(None)?;
+        blue.set_filter(None)?;
         blue.verbose = verbose.saturating_sub(1);
         let mut ret = Bluetooth { blue, verbose };
         Ok(ret)
@@ -44,7 +44,7 @@ impl Bluetooth {
         // register advertisement and set discoverable true
         let mut adv = Advertisement::new(AdType::Peripheral, "ecp-device".to_string());
         let sec = timeout.as_secs().min(std::u16::MAX as u64) as u16;
-		adv.duration = 2;
+        adv.duration = 2;
         adv.timeout = sec;
         adv.solicit_uuids = Vec::from(&[ecp_uuid.clone()][..]);
         let ad_idx = self.blue.start_adv(adv).ok();
@@ -172,15 +172,6 @@ impl BluetoothReceiver {
                     println!("Still waiting for device to connect...");
                 };
                 println!("Bluetooth device connected, starting message reception.");
-                let mut poller = match blue.collect_notify_fds(&mac) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        if verbose >= 1 {
-                            eprintln!("Error occurred acquiring notify file descriptors: {:?}", e);
-                        }
-                        continue;
-                    }
-                };
 
                 /*if verbose >= 3 {
                     eprintln!("Fds: {:?}", poller.fds)
@@ -194,7 +185,7 @@ impl BluetoothReceiver {
                     Some(serv) => serv,
                     None => continue,
                 };
-                let mut time_char = match ecp_service.get_char(&ecp_bufs[9]) {
+                let mut time_char = match ecp_service.get_char(&ecp_bufs[5]) {
                     Some(ch) => ch,
                     None => continue,
                 };
@@ -240,95 +231,70 @@ impl BluetoothReceiver {
                         Some(serv) => serv,
                         None => break,
                     };
-                    if let Err(_) = poller.poll(Some(zero)) {
-                        eprintln!("Polling error getting next device.");
-                        break;
-                    }
-
-                    let ready = poller.get_ready();
                     let now = Instant::now();
-                    if verbose >= 3 {
-                        eprintln!("Ready fds: {:?}", ready);
-                    }
                     let mut msgs = Vec::new();
                     let mut err_state = false;
-                    for &fd_idx in ready {
-						let flags = poller.get_flags(fd_idx).unwrap();
-                        if flags.contains(PollFlags::POLLERR) 	{
-                            println!(
-                                "Notify file descriptor for {} is in error state.",
-                                ecp_bufs[fd_idx]
-                            );
-                            err_state = true;
-                            break;
-                        }
-                        if flags.contains(PollFlags::POLLHUP) {
-                            println!(
-                                "Notify file descriptor for {} has hung up.",
-                                ecp_bufs[fd_idx]
-                            );
-                            err_state = true;
-                            break;
-                        }
-                        let value = ecp_service
-                            .get_char(&ecp_bufs[fd_idx])
-                            .unwrap()
-                            .try_get_notify()
-                            .unwrap();
-
-                        if fd_idx == 9 {
-                            // time signal
-                            if value.len() == 4 {
-                                let time = parse_time_signal(&value);
-                                if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
-                                    return Err(Error::Unrecoverable(
-                                        "Receiver is disconnected".to_string(),
-                                    ));
-                                }
+                    loop {
+                        let value = match ecp_service.get_char(&ecp_bufs[0]) {
+                            Some(notify_serv) => match notify_serv.try_get_notify() {
+                                Ok(val) => val,
+                                Err(err) => match err {
+                                    rustable::Error::Timeout => break,
+                                    _ => {
+                                        err_state = true;
+                                        break;
+                                    }
+                                },
+                            },
+                            None => {
+                                err_state = true;
+                                break;
                             }
-                        } else {
-                            // normal signal
-                            let offset = (31 * fd_idx) as u8;
-                            match LedMsg::deserialize(&value) {
-                                Ok(received) => {
-                                    let len = received.len();
-                                    for mut msg in received {
-                                        match msg.element.checked_add(offset) {
-                                            Some(val) => msg.element = val,
-                                            None => {
-                                                println!(
-                                                    "Received to many msgs from characteristic {}!",
-                                                    ecp_bufs[fd_idx]
-                                                );
-                                                err_state = true;
-                                                break;
-                                            }
-                                        }
-                                        msgs.push(msg);
-                                    }
-                                    if verbose >= 3 {
-                                        eprintln!(
-                                            "Deserialized msgs: {:?}",
-                                            &msgs[msgs.len() - len..]
-                                        );
-                                    }
+                        };
+                        match LedMsg::deserialize(value.as_slice()) {
+                            Ok(recvd) => {
+                                if verbose >= 3 {
+                                    eprintln!("Deserialized msgs: {:?}", recvd);
                                 }
-                                Err(e) => {
-                                    if verbose >= 3 {
-                                        eprintln!("LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}", e, &value);
-                                    } else if verbose >= 2 {
-                                        eprintln!("LedMsgs failed to deserialize: {:?}", e);
-                                    }
+                                msgs.extend(recvd);
+                            }
+                            Err(e) => {
+                                if verbose >= 3 {
+                                    eprintln!(
+                                        "LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}",
+                                        e, &value
+                                    );
+                                } else if verbose >= 2 {
+                                    eprintln!("LedMsgs failed to deserialize: {:?}", e);
                                 }
                             }
                         }
                     }
+                    match ecp_service.get_char(&ecp_bufs[5]) {
+                        Some(time_char) => match time_char.try_get_notify() {
+                            Ok(value) => {
+                                if value.len() == 4 {
+                                    let time = parse_time_signal(value.as_slice());
+                                    if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
+                                        return Err(Error::Unrecoverable(
+                                            "Receiver is disconnected.".to_string(),
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                if let rustable::Error::Timeout = err {
+                                } else {
+                                    err_state = true;
+                                }
+                            }
+                        },
+                        None => err_state = true,
+                    }
                     if err_state {
-                        // one of the notify fds is in an error state so try to find new device
-                        blue.blue
-                            .get_device(&mac)
-                            .unwrap()
-                            .forget_service(&ecp_uuid);
+                        if let Some(mut dev) = blue.blue.get_device(&mac) {
+                            dev.forget_service(&ecp_uuid);
+                        }
                         break;
                     }
                     if msgs.len() != 0 {

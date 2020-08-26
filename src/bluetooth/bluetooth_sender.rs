@@ -1,47 +1,76 @@
 use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Sender};
-use rustable::gatt::{CharFlags, Characteristic, LocalCharBase, LocalServiceBase, Service, CharValue};
-use rustable::{Bluetooth as BT, Device, ValOrFn, UUID};
+use rustable::gatt::{
+    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service,
+};
+use rustable::{Bluetooth as BT, Device, ToUUID, ValOrFn, UUID};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::{sleep, spawn, JoinHandle};
 use std::time::{Duration, Instant};
 
-const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb349";
+const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
 
 struct Bluetooth {
     blue: BT,
     time: u32,
     last_set: Instant,
-    msgs: [Option<LedMsg>; 256],
+    msgs: Rc<RefCell<[Option<LedMsg>; 256]>>,
 }
 
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("io.maves.ecp_sender".to_string(), blue_path)?;
-		blue.set_filter(None)?;
+        blue.set_filter(None)?;
         blue.verbose = verbose;
         let mut ret = Bluetooth {
             blue,
             time: 0,
             last_set: Instant::now(),
-            msgs: [None; 256],
+            msgs: Rc::new(RefCell::new([None; 256])),
         };
         ret.init_service()?;
         Ok(ret)
     }
 
     fn init_service(&mut self) -> Result<(), Error> {
-        let mut sender_service = LocalServiceBase::new(ECP_UUID, true);
+        let ecp_uuid = ECP_UUID.to_uuid();
+        let mut sender_service = LocalServiceBase::new(&ecp_uuid, true);
         let mut flags = CharFlags::default();
         flags.broadcast = true;
         flags.read = true;
         flags.notify = true;
-        flags.indicate = false;
-        for uuid in &ecp_bufs() {
-            sender_service.add_char(LocalCharBase::new(uuid, flags));
+        let uuids = ecp_bufs();
+        for uuid in &uuids {
+            let mut base = LocalCharBase::new(uuid, flags);
+            base.notify_fd_buf = Some(256);
+            sender_service.add_char(base);
         }
         self.blue.add_service(sender_service)?;
+        let mut sender_service = self.blue.get_service(ecp_uuid).unwrap();
+        for (i, uuid) in uuids[1..5].iter().enumerate() {
+            let rc_msgs = self.msgs.clone();
+            let read_fn = move || {
+                let start = i * 64;
+                let end = start + 64;
+                let mut cv = CharValue::new(512);
+                let mut msgs = [LedMsg::default(); 64];
+                let mut cnt = 0;
+                let borrow = rc_msgs.borrow();
+                let iter = borrow[start..end].iter().filter_map(|x| *x);
+                for (dst, src) in msgs.iter_mut().zip(iter) {
+                    *dst = src;
+                    cnt += 1;
+                }
+                let (len, msgs_consumed) = LedMsg::serialize(&msgs[..cnt], cv.as_mut_slice());
+                debug_assert_eq!(msgs_consumed, cnt);
+                cv.resize(len, 0);
+                cv
+            };
+            let mut ecp_char = sender_service.get_char(uuid).unwrap();
+            ecp_char.write_val_or_fn(&mut ValOrFn::Function(Box::new(read_fn)));
+        }
         self.blue.register_application()?;
         Ok(())
     }
@@ -76,12 +105,12 @@ impl BluetoothSender {
                             bt.time = msgs[0]
                                 .cur_time
                                 .wrapping_add(bt.last_set.duration_since(start).as_micros() as u32);
-                            let mut dirty = [false; 9]; // to keep track which characteristics need to be updated
-                            for msg in msgs {
-                                bt.msgs[msg.element as usize] = Some(msg);
-                                dirty[msg.element as usize / 31] = true;
+
+                            let mut mut_msgs = bt.msgs.borrow_mut();
+                            for msg in &msgs {
+                                mut_msgs[msg.element as usize] = Some(*msg);
                             }
-                            for msg in bt.msgs.iter_mut() {
+                            for msg in mut_msgs.iter_mut() {
                                 // prune old messages
                                 if let Some(v) = msg {
                                     if (bt.time.wrapping_sub(v.cur_time) as i32).abs() > 5_000_000 {
@@ -90,37 +119,34 @@ impl BluetoothSender {
                                     }
                                 }
                             }
+                            drop(mut_msgs);
 
                             // eprintln!("dirty received: {:?}", dirty);
                             // write out the dirty characteristics and
                             let mut service = bt.blue.get_service(ECP_UUID).unwrap();
-                            for (i, &d) in dirty.iter().enumerate() {
-                                if d {
-                                    let mut msgs = [LedMsg::default(); 31];
-                                    let (start, end) = (i * 31, (i + 1) * 31);
-                                    let mut count = 0;
-                                    //eprintln!("bt.msgs[start..end]: {:?}", &bt.msgs[start..end]);
-                                    for msg in &bt.msgs[start..end] {
-                                        if let Some(msg) = msg {
-                                            msgs[count] = *msg;
-                                            count += 1;
-                                        }
+                            let mut notify_char = service.get_char(&ecp_bufs[0]).unwrap();
+                            let mtu = notify_char.notify_mtu().unwrap_or(23) - 3; // The 3 accounts for ATT HDR
+                            let mut written = 0;
+                            while written < msgs.len() {
+                                let mut cv = CharValue::new(mtu as usize);
+
+                                let (len, consumed) =
+                                    LedMsg::serialize(&msgs[written..], cv.as_mut_slice());
+                                cv.resize(len, 0);
+                                written += consumed;
+                                notify_char.write_wait(cv)?;
+                                if let Err(e) = notify_char.notify(None) {
+                                    if let rustable::Error::Timeout = e {
+                                    } else {
+                                        return Err(e.into());
                                     }
-                                    //eprintln!("msgs[..count]: {:?}", &msgs[..count]);
-                                    let mut buf = [0; 255];
-                                    let (len, _) = LedMsg::serialize(&msgs[..count], &mut buf);
-                                    //eprintln!("buf[..len]: {:?}", &buf[..len]);
-                                    //eprintln!("ecp_bufs[i]: {:?}", &ecp_bufs[i]);
-                                    let mut character = service.get_char(&ecp_bufs[i]).unwrap();
-                                    character.write(&buf[..len])?;
-                                    character.notify()?;
                                 }
                             }
                             let cur_time = bt.time;
                             let last_set = bt.last_set;
                             let time_fn = move || {
                                 let mut ret = CharValue::default();
-								ret.extend_from_slice(
+                                ret.extend_from_slice(
                                     &cur_time
                                         .wrapping_add(
                                             Instant::now().duration_since(last_set).as_micros()
@@ -128,7 +154,7 @@ impl BluetoothSender {
                                         )
                                         .to_be_bytes(),
                                 );
-								ret
+                                ret
                             };
                             let mut character = service.get_char(ECP_TIME).unwrap();
                             let new_time = time_fn();
@@ -144,10 +170,10 @@ impl BluetoothSender {
                                 let new_time = i32::from_be_bytes(new_buf);
                                 let old_time = i32::from_be_bytes(old_buf);
                                 if new_time.wrapping_sub(old_time).abs() > 5000 {
-                                    character.notify()?;
+                                    character.notify(None)?;
                                 }
                             } else {
-                                character.notify()?;
+                                character.notify(None)?;
                             }
                         }
                         BMsg::Terminate => return Ok(()),
