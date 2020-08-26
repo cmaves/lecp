@@ -126,7 +126,7 @@ impl BluetoothSender {
                             bt.time.set(cur_time);
                             let notify_time = (cur_time.wrapping_sub(old_time) as i32).abs()
                                 > 5_000
-                                || now.duration_since(last_notify_time).as_secs() > 5_000;
+                                || now.duration_since(last_notify_time).as_secs() > 5;
 
                             let mut mut_msgs = bt.msgs.borrow_mut();
                             for msg in &msgs {
