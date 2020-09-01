@@ -196,11 +196,11 @@ impl BluetoothSender {
 								let since = now.duration_since(stats_period_start);
 								if since > target_dur {
 									let since_secs = since.as_secs_f64();
-									eprintln!("Period throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
+									eprintln!("Sending stats:\n\tPeriod throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
 
 									let since_secs_total = now.duration_since(stats_start_total).as_secs_f64();
 
-									eprintln!("Total throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
+									eprintln!("\tTotal throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
 
 									// reset period stats
 									stats_period_start = now;
