@@ -12,6 +12,11 @@ use std::time::{Duration, Instant};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
 
+#[derive(Clone, Copy)]
+pub struct BleSenderOptions {
+	pub verbose: u8,
+	pub stats: u16,
+}
 struct Bluetooth {
     blue: BT,
     time: Rc<Cell<u32>>,
@@ -104,12 +109,22 @@ pub struct BluetoothSender {
     handle: Status,
 }
 impl BluetoothSender {
-    pub fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
+    pub fn new(blue_path: String, options: BleSenderOptions) -> Result<Self, Error> {
         let (sender, recv) = sync_channel(1);
         let handle = Status::Running(spawn(move || {
-            let mut bt = Bluetooth::new(blue_path, verbose)?;
+            let mut bt = Bluetooth::new(blue_path, options.verbose)?;
             let ecp_bufs = ecp_bufs();
             let mut last_notify_time = Instant::now();
+			
+
+			// the stats data
+			let target_dur = Duration::from_secs(options.stats.into());
+			let stats_start_total = Instant::now();
+			let mut stats_period_start = stats_start_total;
+			let mut sent_pkts_cnt = 0;
+			let mut sent_pkts_cnt_total = 0;
+			let mut sent_bytes = 0;
+			let mut sent_bytes_total = 0;
             loop {
                 bt.process_requests()?;
                 match recv.try_recv() {
@@ -126,7 +141,7 @@ impl BluetoothSender {
                             bt.time.set(cur_time);
                             let notify_time = (cur_time.wrapping_sub(old_time) as i32).abs()
                                 > 5_000
-                                || now.duration_since(last_notify_time).as_secs() > 5;
+                                || now.duration_since(last_notify_time).as_millis() > 5_000;
 
                             let mut mut_msgs = bt.msgs.borrow_mut();
                             for msg in &msgs {
@@ -169,7 +184,30 @@ impl BluetoothSender {
                                         return Err(e.into());
                                     }
                                 }
+								if options.stats != 0  {
+									sent_pkts_cnt += 1;
+									sent_pkts_cnt_total += 1;
+									sent_bytes += len;
+									sent_bytes_total += len;
+								}
                             }
+							if options.stats != 0 { 
+								let now = Instant::now();
+								let since = now.duration_since(stats_period_start);
+								if since > target_dur {
+									let since_secs = since.as_secs_f64();
+									eprintln!("Period throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
+
+									let since_secs_total = now.duration_since(stats_start_total).as_secs_f64();
+
+									eprintln!("Total throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
+
+									// reset period stats
+									stats_period_start = now;
+									sent_pkts_cnt = 0;
+									sent_bytes = 0;
+								}
+							}
                         }
                         BMsg::Terminate => return Ok(()),
                         BMsg::Alive => (),

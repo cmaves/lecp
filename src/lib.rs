@@ -173,7 +173,7 @@ impl LedMsg {
         Ok(ret)
     }
     fn serialize(msgs: &[LedMsg], ret: &mut [u8]) -> (usize, usize) {
-        assert!(ret.len() >= 12);
+        assert!(ret.len() >= 7);
         let time = match msgs.get(0) {
             Some(msg) => msg.cur_time,
             None => 0,
@@ -228,7 +228,7 @@ impl LedMsg {
                 }
             };
             let msg_len = extra0 + extra1 + 3;
-            if i + msg_len < ret.len() {
+            if i + msg_len <= ret.len() {
                 // we have enough room in the buffer so append
                 buf[0] = flag0 | flag1;
                 buf[1] = msg.element;
@@ -239,6 +239,10 @@ impl LedMsg {
                 // no room in buffer so discard last msg and return
                 return (i, j);
             }
+			if i + 3 > ret.len() {
+				// we wont have any room for next message 
+				return (i, j + 1)
+			}
         }
         (i, msgs.len())
     }
