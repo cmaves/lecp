@@ -1,5 +1,5 @@
 use clap::{App, Arg, ArgMatches};
-use ecp::bluetooth::BluetoothReceiver;
+use ecp::bluetooth::{BleOptions, BluetoothReceiver};
 use ecp::color::{Color, ColorMap};
 use ecp::controller::{Controller, Renderer};
 use ecp::Receiver;
@@ -39,11 +39,20 @@ pub fn main() {
     for color in color_map[0..5].iter_mut() {
         *color *= brightness;
     }
+    let recvstats = if args.is_present("recvstats") {
+        u16::from_str(args.value_of("recvstats").unwrap()).unwrap()
+    } else {
+        0
+    };
     match mode {
         "bluetooth" => {
             #[cfg(feature = "bluetooth")]
             {
-                let recv = BluetoothReceiver::new("/org/bluez/hci0".to_string(), verbose).unwrap();
+                let options = BleOptions {
+                    verbose,
+                    stats: recvstats,
+                };
+                let recv = BluetoothReceiver::new("/org/bluez/hci0".to_string(), options).unwrap();
                 let mut renderer = Renderer::new(recv, ctl);
                 renderer.color_map = color_map;
                 render(renderer, verbose);
@@ -179,5 +188,17 @@ fn parser<'a, 'b>() -> App<'a, 'b> {
                 .short("v")
                 .long("verbose")
                 .multiple(true),
+        )
+        .arg(
+            Arg::with_name("recvstats")
+                .long("recvstats")
+                .value_name("SECS")
+                .takes_value(true)
+                .validator(|s| {
+                    u16::from_str(&s)
+                        .map_err(|e| format!("{:?}", e))
+                        .map(|_| ())
+                })
+                .default_value("60"),
         )
 }

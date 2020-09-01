@@ -1,4 +1,4 @@
-use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, Status, ECP_BUF1_BASE, ECP_UUID};
+use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Sender};
 use rustable::gatt::{
     CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service,
@@ -12,11 +12,6 @@ use std::time::{Duration, Instant};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
 
-#[derive(Clone, Copy)]
-pub struct BleSenderOptions {
-	pub verbose: u8,
-	pub stats: u16,
-}
 struct Bluetooth {
     blue: BT,
     time: Rc<Cell<u32>>,
@@ -109,22 +104,21 @@ pub struct BluetoothSender {
     handle: Status,
 }
 impl BluetoothSender {
-    pub fn new(blue_path: String, options: BleSenderOptions) -> Result<Self, Error> {
+    pub fn new(blue_path: String, options: BleOptions) -> Result<Self, Error> {
         let (sender, recv) = sync_channel(1);
         let handle = Status::Running(spawn(move || {
             let mut bt = Bluetooth::new(blue_path, options.verbose)?;
             let ecp_bufs = ecp_bufs();
             let mut last_notify_time = Instant::now();
-			
 
-			// the stats data
-			let target_dur = Duration::from_secs(options.stats.into());
-			let stats_start_total = Instant::now();
-			let mut stats_period_start = stats_start_total;
-			let mut sent_pkts_cnt = 0;
-			let mut sent_pkts_cnt_total = 0;
-			let mut sent_bytes = 0;
-			let mut sent_bytes_total = 0;
+            // the stats data
+            let target_dur = Duration::from_secs(options.stats.into());
+            let stats_start_total = Instant::now();
+            let mut stats_period_start = stats_start_total;
+            let mut sent_pkts_cnt = 0;
+            let mut sent_pkts_cnt_total = 0;
+            let mut sent_bytes = 0;
+            let mut sent_bytes_total = 0;
             loop {
                 bt.process_requests()?;
                 match recv.try_recv() {
@@ -184,30 +178,31 @@ impl BluetoothSender {
                                         return Err(e.into());
                                     }
                                 }
-								if options.stats != 0  {
-									sent_pkts_cnt += 1;
-									sent_pkts_cnt_total += 1;
-									sent_bytes += len;
-									sent_bytes_total += len;
-								}
+                                if options.stats != 0 {
+                                    sent_pkts_cnt += 1;
+                                    sent_pkts_cnt_total += 1;
+                                    sent_bytes += len;
+                                    sent_bytes_total += len;
+                                }
                             }
-							if options.stats != 0 { 
-								let now = Instant::now();
-								let since = now.duration_since(stats_period_start);
-								if since > target_dur {
-									let since_secs = since.as_secs_f64();
-									eprintln!("Sending stats:\n\tPeriod throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
+                            if options.stats != 0 {
+                                let now = Instant::now();
+                                let since = now.duration_since(stats_period_start);
+                                if since > target_dur {
+                                    let since_secs = since.as_secs_f64();
+                                    eprintln!("Sending stats:\n\tPeriod throughput: {:.0} Msgs/s, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
 
-									let since_secs_total = now.duration_since(stats_start_total).as_secs_f64();
+                                    let since_secs_total =
+                                        now.duration_since(stats_start_total).as_secs_f64();
 
-									eprintln!("\tTotal throughput: {:.0} Bps, {:.0} msgs, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
+                                    eprintln!("\tTotal throughput: {:.0} Bps, {:.0} Msgs/s, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
 
-									// reset period stats
-									stats_period_start = now;
-									sent_pkts_cnt = 0;
-									sent_bytes = 0;
-								}
-							}
+                                    // reset period stats
+                                    stats_period_start = now;
+                                    sent_pkts_cnt = 0;
+                                    sent_bytes = 0;
+                                }
+                            }
                         }
                         BMsg::Terminate => return Ok(()),
                         BMsg::Alive => (),

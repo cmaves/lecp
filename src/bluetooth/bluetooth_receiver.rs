@@ -1,4 +1,4 @@
-use super::{ecp_bufs, BMsg, Status, ECP_BUF1_BASE, ECP_UUID};
+use super::{ecp_bufs, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Receiver};
 use nix::poll::PollFlags;
 use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service};
@@ -47,7 +47,14 @@ impl Bluetooth {
         adv.duration = 2;
         adv.timeout = sec;
         adv.solicit_uuids = Vec::from(&[ecp_uuid.clone()][..]);
-        let ad_idx = self.blue.start_adv(adv).ok();
+        self.blue.remove_all_adv()?;
+        let ad_idx = match self.blue.start_adv(adv) {
+            Ok(idx) => Some(idx),
+            Err(err) => {
+                eprintln!("Warning: failed to regster advertisement: {:?}", err);
+                None
+            }
+        };
         self.blue.set_power(true)?;
         self.blue.set_discoverable(true)?;
 
@@ -73,7 +80,7 @@ impl Bluetooth {
             // do-while terminate check
             if tar.checked_duration_since(Instant::now()).is_none() {
                 if let Some(idx) = ad_idx {
-                    self.blue.remove_adv(idx);
+                    self.blue.remove_adv(idx)?;
                 }
                 return Err(Error::Timeout("Finding device timed out".to_string()));
             } else {
@@ -144,11 +151,11 @@ pub struct BluetoothReceiver {
 }
 
 impl BluetoothReceiver {
-    pub fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
+    pub fn new(blue_path: String, options: BleOptions) -> Result<Self, Error> {
         let (send_bmsg, recv_bmsg) = mpsc::sync_channel(1);
         let (send_msgs, recv_msgs) = mpsc::sync_channel(1);
         let handle = Status::Running(spawn(move || {
-            let mut blue = Bluetooth::new(blue_path, verbose)?;
+            let mut blue = Bluetooth::new(blue_path, options.verbose)?;
             println!("Waiting for device to connect...");
             let to = Duration::from_secs(60);
             let ecp_uuid: UUID = ECP_UUID.into();
@@ -187,7 +194,7 @@ impl BluetoothReceiver {
                 };
                 let mut time_char = match ecp_service.get_char(&ecp_bufs[5]) {
                     Some(ch) => ch,
-                    None => continue,
+                    None => continue, // Add verbose error message
                 };
                 match time_char.read_wait() {
                     Ok(cv) => {
@@ -212,9 +219,40 @@ impl BluetoothReceiver {
                         continue;
                     }
                 }
-                // loop over incoming notification and continue to
-                let zero = Duration::from_secs(0);
+
+                // acquire notify fds for characteristics
+                if let Err(err) = time_char.acquire_notify() {
+                    eprintln!(
+                        "Error getting notification fd for time characteristic: {:?}",
+                        err
+                    );
+                    continue;
+                }
+                match ecp_service.get_char(&ecp_bufs[0]) {
+                    Some(mut ch) => {
+                        if let Err(err) = ch.acquire_notify() {
+                            eprintln!(
+                                "Error getting notification fd for msg characteristic: {:?}",
+                                err
+                            );
+                            continue;
+                        }
+                    }
+                    None => continue, //TODO: Add verbose error message
+                }
+
+                // the stats data
+                let target_dur = Duration::from_secs(options.stats.into());
+                let stats_start_total = Instant::now();
+                let mut stats_period_start = stats_start_total;
+                let mut recv_pkts_cnt = 0;
+                let mut recv_pkts_cnt_total = 0;
+                let mut recv_bytes = 0;
+                let mut recv_bytes_total = 0;
+
+                // begin notification and render loop
                 loop {
+                    // check for incoming message from main thread
                     for bmsg in recv_bmsg.try_iter() {
                         match bmsg {
                             BMsg::Alive => (),
@@ -222,6 +260,7 @@ impl BluetoothReceiver {
                             _ => unreachable!(),
                         }
                     }
+
                     blue.blue.process_requests()?;
                     let mut device = match blue.blue.get_device(&mac) {
                         Some(dev) => dev,
@@ -231,9 +270,9 @@ impl BluetoothReceiver {
                         Some(serv) => serv,
                         None => break,
                     };
-                    let now = Instant::now();
                     let mut msgs = Vec::new();
                     let mut err_state = false;
+                    // receive message from time thread
                     loop {
                         let value = match ecp_service.get_char(&ecp_bufs[0]) {
                             Some(notify_serv) => match notify_serv.try_get_notify() {
@@ -253,40 +292,75 @@ impl BluetoothReceiver {
                         };
                         match LedMsg::deserialize(value.as_slice()) {
                             Ok(recvd) => {
-                                if verbose >= 3 {
+                                if options.verbose >= 3 {
                                     eprintln!("Deserialized msgs: {:?}", recvd);
+                                }
+                                if options.stats != 0 {
+                                    recv_pkts_cnt += 1;
+                                    recv_pkts_cnt_total += 1;
+                                    recv_bytes += value.len();
+                                    recv_bytes_total += value.len();
                                 }
                                 msgs.extend(recvd);
                             }
                             Err(e) => {
-                                if verbose >= 3 {
+                                if options.verbose >= 3 {
                                     eprintln!(
                                         "LedMsgs failed to deserialize: {:?} for bytes:\n{:02x?}",
                                         e, &value
                                     );
-                                } else if verbose >= 2 {
+                                } else if options.verbose >= 2 {
                                     eprintln!("LedMsgs failed to deserialize: {:?}", e);
                                 }
                             }
                         }
                     }
+                    let now = Instant::now();
+                    if options.stats != 0 {
+                        let since = now.duration_since(stats_period_start);
+                        if since > target_dur {
+                            let since_secs = since.as_secs_f64();
+                            eprintln!("Receiving stats:\n\tPeriod throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes", recv_bytes as f64 / since_secs, recv_pkts_cnt as f64 / since_secs, recv_bytes / recv_pkts_cnt);
+
+                            let since_secs_total =
+                                now.duration_since(stats_start_total).as_secs_f64();
+
+                            eprintln!(
+                                "\tTotal throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes\n",
+                                recv_bytes_total as f64 / since_secs_total,
+                                recv_pkts_cnt_total as f64 / since_secs_total,
+                                recv_bytes_total / recv_pkts_cnt_total
+                            );
+
+                            // reset period stats
+                            stats_period_start = now;
+                            recv_pkts_cnt = 0;
+                            recv_bytes = 0;
+                        }
+                    }
                     match ecp_service.get_char(&ecp_bufs[5]) {
-                        Some(time_char) => match time_char.try_get_notify() {
-                            Ok(value) => {
-                                if value.len() == 4 {
-                                    let time = parse_time_signal(value.as_slice());
-                                    if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
-                                        return Err(Error::Unrecoverable(
-                                            "Receiver is disconnected.".to_string(),
-                                        ));
+                        // receive the most recent time from the sending device
+                        Some(time_char) => loop {
+                            match time_char.try_get_notify() {
+                                Ok(value) => {
+                                    if value.len() == 4 {
+                                        let time = parse_time_signal(value.as_slice());
+                                        if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
+                                            return Err(Error::Unrecoverable(
+                                                "Receiver is disconnected.".to_string(),
+                                            ));
+                                        }
                                     }
                                 }
-                            }
-                            Err(err) => {
-                                if let rustable::Error::Timeout = err {
-                                } else {
-                                    err_state = true;
-                                }
+                                Err(err) => match err {
+                                    rustable::Error::Timeout => break,
+                                    err => {
+                                        if options.verbose >= 1 {
+                                            eprintln!("Failed to retrieve notification from time characteristic: {:?}", err);
+                                        }
+                                        err_state = true;
+                                    }
+                                },
                             }
                         },
                         None => err_state = true,
@@ -298,7 +372,7 @@ impl BluetoothReceiver {
                         break;
                     }
                     if msgs.len() != 0 {
-                        if verbose >= 3 {
+                        if options.verbose >= 3 {
                             eprintln!("LedMsgs to be send: {:?}", msgs);
                         }
                         if let Err(e) = send_msgs.try_send(RecvMsg::LedMsgs(msgs)) {

@@ -86,6 +86,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         let mut last_active = 0;
         let mut first_active = 256;
         let cur_time = self.recv.cur_time();
+        if self.verbose >= 3 {
+            eprintln!("cur_time: {}", cur_time);
+        }
         for (i, msg) in self.msgs.iter().enumerate().rev() {
             if self.verbose >= 3 {
                 eprintln!("msg {}: {:?}", i, msg);
@@ -102,7 +105,9 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                     elements[e] = Some(i);
                 }
             } else {
-                eprintln!("ignoring msg {} do to time constraints", i);
+                if self.verbose >= 3 {
+                    eprintln!("ignoring msg {} do to time constraints", i);
+                }
             }
         }
         let mut flat_stack = 0;
@@ -139,7 +144,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                 }
             }
         }
-        if self.verbose >= 3 {
+        if self.verbose >= 4 {
             eprintln!("work buf: {:?}", self.work_buf);
         }
         let mut changed = false;
@@ -162,7 +167,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                 }
             }
         }
-        if self.verbose >= 3 {
+        if self.verbose >= 4 {
             eprintln!("Led buf: {:?}", leds)
         }
         /*
@@ -186,7 +191,8 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         for i in 0..self.msgs.len() {
             let msg = self.msgs[i];
             if elements[msg.element as usize] != Some(i)
-                || cur_time.wrapping_sub(msg.cur_time) > 5_000_000
+                || (cur_time.wrapping_sub(msg.cur_time) as i32).abs() > 5_000_000
+            // i32 abs() allows for early msgs
             {
                 del += 1;
             } else if del > 0 {

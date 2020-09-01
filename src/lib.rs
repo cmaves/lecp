@@ -239,10 +239,10 @@ impl LedMsg {
                 // no room in buffer so discard last msg and return
                 return (i, j);
             }
-			if i + 3 > ret.len() {
-				// we wont have any room for next message 
-				return (i, j + 1)
-			}
+            if i + 3 > ret.len() {
+                // we wont have any room for next message
+                return (i, j + 1);
+            }
         }
         (i, msgs.len())
     }
