@@ -1,24 +1,57 @@
-use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID};
+use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID, parse_time_signal};
 use crate::{Error, LedMsg, Sender};
 use rustable::gatt::{
-    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service,
+    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service, WriteType
 };
+use rustable::interfaces::BLUEZ_FAILED;
 use rustable::{Bluetooth as BT, Device, ToUUID, ValOrFn, UUID};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::{sleep, spawn, JoinHandle};
 use std::time::{Duration, Instant};
+use std::collections::VecDeque;
+use std::os::unix::io::AsRawFd;
+use nix::poll::{poll, PollFd, PollFlags};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
+
+const MAX_OUT: usize = 32;
+const MIN_SLEEP: u64 = 5; // milliseconnds
+const INIT_CHANGE: f64 = 2.0;
+const STABILIZE_MAX: f64 = 0.25;
 
 struct Bluetooth {
     blue: BT,
     time: Rc<Cell<u32>>,
     last_set: Rc<Cell<Instant>>,
     msgs: Rc<RefCell<[Option<LedMsg>; 256]>>,
+	last_sent: Rc<Cell<u32>>,
+	wait: Rc<Cell<Duration>>
 }
-
+fn find_in_buf(sorted: &VecDeque<u32>, target: u32) -> usize {
+	if sorted.len() == 0 {
+		return 0;
+	}
+	let mut lower = 0;
+	let mut upper = sorted.len();
+	while lower < upper {
+		let idx = (lower + upper) / 2;
+		if sorted[idx] == target {
+			return idx;
+		}
+		if sorted[idx] > target {
+			upper = idx;
+		} else {
+			lower = idx + 1;
+		}
+	}
+	if sorted[lower] > target {
+		lower - 1
+	} else {
+		lower
+	}
+}
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("io.maves.ecp_sender".to_string(), blue_path)?;
@@ -29,6 +62,8 @@ impl Bluetooth {
             time: Rc::new(Cell::new(0)),
             last_set: Rc::new(Cell::new(Instant::now())),
             msgs: Rc::new(RefCell::new([None; 256])),
+			last_sent: Rc::new(Cell::new(0)),
+			wait: Rc::new(Cell::new(Duration::from_secs_f64(1.0 / 32.0)))
         };
         ret.init_service()?;
         Ok(ret)
@@ -42,7 +77,40 @@ impl Bluetooth {
         flags.read = true;
         flags.notify = true;
         let uuids = ecp_bufs();
-        for uuid in &uuids {
+		let mut notify_flags = flags;
+		notify_flags.write_wo_response = true;
+        let mut base = LocalCharBase::new(&uuids[0], flags);
+		base.enable_write_fd(true);
+		let last_sent_clone = self.last_sent.clone();
+		let wait_clone = self.wait.clone();
+		let mut lat_total: i64 = 0;
+		let mut lat_cnt = 0;
+		let mut last_lat_total: i64 = 0;
+		base.write_callback = Some(Box::new(move |bytes| {
+			if bytes.len() != 4 {
+				return Err((BLUEZ_FAILED.to_string(), Some("Invalid length".to_string())));
+			}
+			let time = parse_time_signal(bytes);
+			let last_sent = last_sent_clone.get();
+			let diff = last_sent.wrapping_sub(time);
+			lat_cnt += 1;
+			lat_total += diff as i64;
+			if lat_cnt >= 32 {
+				let lat_growth = (lat_total as i64) - (last_lat_total as i64);
+				let mult = if lat_growth <= 0 {
+					31.0 / 32.0
+				} else {
+					40.0 / 32.0
+				};
+				wait_clone.set(wait_clone.get().mul_f64(mult));
+				lat_cnt = 0;
+				last_lat_total = lat_total;
+				lat_total = 0;
+			}
+			Ok((None, false))
+		}));
+		sender_service.add_char(base);
+        for uuid in &uuids[1..] {
             let mut base = LocalCharBase::new(uuid, flags);
             base.notify_fd_buf = Some(256);
             sender_service.add_char(base);
@@ -103,6 +171,38 @@ pub struct BluetoothSender {
     sender: SyncSender<BMsg>,
     handle: Status,
 }
+
+fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
+	let target = Instant::now() + dur;
+	let bt_fd = bt.blue.as_raw_fd();
+	let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
+	let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+	let notify_fd = match notify_char.get_write_fd() {
+		Some(fd) => fd,
+		None => -1
+	};
+	let mut polls = [PollFd::new(notify_fd, PollFlags::POLLIN), PollFd::new(bt_fd, PollFlags::POLLIN)];
+	let mut sleep_time = target.saturating_duration_since(Instant::now()).as_millis();
+	loop {
+		if let Ok(i) = poll(&mut polls, sleep_time as i32) {
+			if i > 0 {
+			if let Some(evts) = polls[0].revents() {
+				let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
+				let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+				notify_char.check_write_fd()?;
+			}
+			if let Some(evts) = polls[1].revents() {
+				bt.blue.process_requests()?;
+			}
+			}
+		}
+		match target.checked_duration_since(Instant::now()) {
+			Some(sleep) => sleep_time = sleep.as_millis(),
+			None => break
+		}
+	}
+	Ok(())
+}
 impl BluetoothSender {
     pub fn new(blue_path: String, options: BleOptions) -> Result<Self, Error> {
         let (sender, recv) = sync_channel(1);
@@ -120,7 +220,7 @@ impl BluetoothSender {
             let mut sent_bytes = 0;
             let mut sent_bytes_total = 0;
             loop {
-                bt.process_requests()?;
+				process_requests(bt.wait.get(), &mut bt)?;
                 match recv.try_recv() {
                     Ok(msg) => match msg {
                         BMsg::SendMsg(msgs, start) => {
@@ -158,11 +258,11 @@ impl BluetoothSender {
                             let mut service = bt.blue.get_service(ECP_UUID).unwrap();
                             if notify_time {
                                 let mut character = service.get_char(ECP_TIME).unwrap();
-                                character.notify(None)?;
+                                character.notify()?;
                                 last_notify_time = now;
                             }
                             let mut notify_char = service.get_char(&ecp_bufs[0]).unwrap();
-                            let mtu = notify_char.notify_mtu().unwrap_or(23) - 3; // The 3 accounts for ATT HDR
+                            let mtu = notify_char.get_notify_mtu().unwrap_or(23) - 3; // The 3 accounts for ATT HDR
                             let mut written = 0;
                             while written < msgs.len() {
                                 let mut cv = CharValue::new(mtu as usize);
@@ -171,8 +271,8 @@ impl BluetoothSender {
                                     LedMsg::serialize(&msgs[written..], cv.as_mut_slice());
                                 cv.resize(len, 0);
                                 written += consumed;
-                                notify_char.write_wait(cv)?;
-                                if let Err(e) = notify_char.notify(None) {
+                                notify_char.write_wait(cv, WriteType::WithoutRes)?;
+                                if let Err(e) = notify_char.notify() {
                                     if let rustable::Error::Timeout = e {
                                     } else {
                                         return Err(e.into());
@@ -190,12 +290,12 @@ impl BluetoothSender {
                                 let since = now.duration_since(stats_period_start);
                                 if since > target_dur {
                                     let since_secs = since.as_secs_f64();
-                                    eprintln!("Sending stats:\n\tPeriod throughput: {:.0} Msgs/s, {:.0} msgs, Avg size: {} bytes", sent_bytes as f64 / since_secs, sent_pkts_cnt as f64 / since_secs, sent_bytes / sent_pkts_cnt);
+                                    eprintln!("Sending stats:\n\tPeriod throughput: {:.1} Msgs/s, {:.0} msgs, {:.0} Bps, {} bytes, Avg size: {:.0} bytes", sent_pkts_cnt as f64 / since_secs, sent_pkts_cnt, sent_bytes as f64 / since_secs, sent_bytes, sent_bytes / sent_pkts_cnt);
 
                                     let since_secs_total =
                                         now.duration_since(stats_start_total).as_secs_f64();
 
-                                    eprintln!("\tTotal throughput: {:.0} Bps, {:.0} Msgs/s, Avg size: {} bytes\n", sent_bytes_total as f64 / since_secs_total, sent_pkts_cnt_total as f64 / since_secs_total, sent_bytes_total / sent_pkts_cnt_total);
+                                    eprintln!("\tTotal throughput: {:.1} Msgs/s, {:.0} msgs, {:.0} Bps, {} bytes, Avg size: {:.0} bytes\n", sent_pkts_cnt_total as f64 / since_secs_total, sent_pkts_cnt_total, sent_bytes_total as f64 / since_secs_total, sent_bytes_total, sent_bytes_total / sent_pkts_cnt_total);
 
                                     // reset period stats
                                     stats_period_start = now;

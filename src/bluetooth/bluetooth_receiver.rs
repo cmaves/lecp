@@ -1,7 +1,7 @@
-use super::{ecp_bufs, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID};
+use super::{ecp_bufs, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID, parse_time_signal};
 use crate::{Error, LedMsg, Receiver};
 use nix::poll::PollFlags;
-use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service};
+use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service, WriteType};
 use rustable::interfaces::{BLUEZ_DEST, MANGAGED_OBJ_CALL, OBJ_MANAGER_IF_STR};
 use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
@@ -16,11 +16,6 @@ struct Bluetooth {
     verbose: u8,
 }
 
-fn parse_time_signal(v: &[u8]) -> u32 {
-    let mut bytes = [0; 4];
-    bytes.copy_from_slice(v);
-    u32::from_be_bytes(bytes)
-}
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
         let mut blue = BT::new("io.maves.ecp_receiver".to_string(), blue_path)?;
@@ -275,8 +270,22 @@ impl BluetoothReceiver {
                     // receive message from time thread
                     loop {
                         let value = match ecp_service.get_char(&ecp_bufs[0]) {
-                            Some(notify_serv) => match notify_serv.try_get_notify() {
-                                Ok(val) => val,
+                            Some(mut notify_char) => match notify_char.try_get_notify() {
+                                Ok(val) => {
+									if val.len() >= 4 {
+										if let None = notify_char.get_write_fd() {
+											if let Err(_) = notify_char.acquire_write() {
+												err_state = true;
+												break;
+											}
+										}
+										if let Err(_) = notify_char.write(val[0..4].into(), WriteType::WithRes) {
+											err_state = true;
+											break;
+										}
+									}
+									val
+								},
                                 Err(err) => match err {
                                     rustable::Error::Timeout => break,
                                     _ => {

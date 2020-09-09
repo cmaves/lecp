@@ -19,6 +19,12 @@ pub struct BleOptions {
     pub stats: u16,
 }
 
+fn parse_time_signal(v: &[u8]) -> u32 {
+    let mut bytes = [0; 4];
+    bytes.copy_from_slice(v);
+    u32::from_be_bytes(bytes)
+}
+
 fn ecp_uuid_rc() -> Rc<str> {
     ECP_UUID.into()
 }
