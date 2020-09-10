@@ -1,15 +1,13 @@
-use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_UUID, ECP_TIME};
+use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_TIME, ECP_UUID};
 use crate::{Error, LedMsg, Receiver};
 use nix::poll::{poll, PollFd, PollFlags};
-use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service, WriteType, CharValue};
-use rustable::interfaces::{BLUEZ_DEST, MANGAGED_OBJ_CALL, OBJ_MANAGER_IF_STR};
+use rustable::gatt::{CharValue, Characteristic, Service, WriteType};
 use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
 use std::os::unix::io::AsRawFd;
-use std::os::unix::io::RawFd;
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::thread::{sleep, spawn};
+use std::thread::spawn;
 use std::time::{Duration, Instant};
 
 struct Bluetooth {
@@ -229,9 +227,11 @@ impl BluetoothReceiver {
                                                 eprintln!("{}", err);
                                             }
                                             break;
-                                        },
-                                        Error::Unrecoverable(err) => return Err(Error::Unrecoverable(err)),
-                                        _ => unreachable!()
+                                        }
+                                        Error::Unrecoverable(err) => {
+                                            return Err(Error::Unrecoverable(err))
+                                        }
+                                        _ => unreachable!(),
                                     }
                                 }
                             }
@@ -289,7 +289,6 @@ impl BluetoothReceiver {
                         // do statistic printing if enabled
                         recv_stats.print_time();
                     }
-
                 }
                 if let Some(mut dev) = blue.blue.get_device(&mac) {
                     if options.verbose >= 2 {
@@ -331,19 +330,31 @@ impl BluetoothReceiver {
     }
 }
 
-
-fn recv_time(mac: &MAC, blue: &mut Bluetooth, send_msgs: &mpsc::SyncSender<RecvMsg>) -> Result<(), Error> {
+fn recv_time(
+    mac: &MAC,
+    blue: &mut Bluetooth,
+    send_msgs: &mpsc::SyncSender<RecvMsg>,
+) -> Result<(), Error> {
     let now = Instant::now();
     // receive message from time signal
-    let mut device = blue.blue.get_device(&mac).ok_or_else(|| 
-        Error::Bluetooth(rustable::Error::BadInput(format!("Device ({}) lost while receiving time.", mac)))
-    )?;
-    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(||
-        Error::Bluetooth(rustable::Error::BadInput(format!("Ecp Service lost on device ({}) lost while receiving time.", mac)))
-    )?;
-    let mut time_char = ecp_service.get_char(ECP_TIME).ok_or_else(||
-        Error::Bluetooth(rustable::Error::BadInput(format!("Time characteristic lost on device ({}).", mac)))
-    )?;
+    let mut device = blue.blue.get_device(&mac).ok_or_else(|| {
+        Error::Bluetooth(rustable::Error::BadInput(format!(
+            "Device ({}) lost while receiving time.",
+            mac
+        )))
+    })?;
+    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(|| {
+        Error::Bluetooth(rustable::Error::BadInput(format!(
+            "Ecp Service lost on device ({}) lost while receiving time.",
+            mac
+        )))
+    })?;
+    let mut time_char = ecp_service.get_char(ECP_TIME).ok_or_else(|| {
+        Error::Bluetooth(rustable::Error::BadInput(format!(
+            "Time characteristic lost on device ({}).",
+            mac
+        )))
+    })?;
 
     let mut time_to_send = None;
     loop {
@@ -361,41 +372,53 @@ fn recv_time(mac: &MAC, blue: &mut Bluetooth, send_msgs: &mpsc::SyncSender<RecvM
             Err(err) => match err {
                 rustable::Error::Timeout => break,
                 err => {
-                    return Err(Error::Bluetooth(rustable::Error::BadInput(format!("Failed to retrieve notification from time characteristic: {:?}", err))));
+                    return Err(Error::Bluetooth(rustable::Error::BadInput(format!(
+                        "Failed to retrieve notification from time characteristic: {:?}",
+                        err
+                    ))));
                 }
             },
         }
     }
     let (time, now) = time_to_send.unwrap();
-    send_msgs.send(RecvMsg::Time(time, now)).map_err(|_| Error::Unrecoverable(
-        "Receiver is disconnected!".to_string())
-    )
+    send_msgs
+        .send(RecvMsg::Time(time, now))
+        .map_err(|_| Error::Unrecoverable("Receiver is disconnected!".to_string()))
 }
 
-fn recv_val(mac: &MAC, blue: &mut Bluetooth, ) -> Result<CharValue, String> {
-    let mut device = blue.blue.get_device(&mac).ok_or_else(|| 
-        format!("Device ({}) lost while receiving msgs.", mac)
-    )?;
-    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(||
-        format!("Ecp Service lost on device ({}) lost while receiving msgs.", mac)
-    )?;
-    let mut msg_char = ecp_service.get_char(ECP_TIME).ok_or_else(||
-        format!("Msgs characteristic lost on device ({}).", mac)
-    )?;
-    let val = msg_char.try_get_notify().map_err(|err| 
-        format!("Failed to get msg notification: {:?}", err)
-    )?;
+fn recv_val(mac: &MAC, blue: &mut Bluetooth) -> Result<CharValue, String> {
+    let mut device = blue
+        .blue
+        .get_device(&mac)
+        .ok_or_else(|| format!("Device ({}) lost while receiving msgs.", mac))?;
+    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(|| {
+        format!(
+            "Ecp Service lost on device ({}) lost while receiving msgs.",
+            mac
+        )
+    })?;
+    let mut msg_char = ecp_service
+        .get_char(ECP_TIME)
+        .ok_or_else(|| format!("Msgs characteristic lost on device ({}).", mac))?;
+    let val = msg_char
+        .try_get_notify()
+        .map_err(|err| format!("Failed to get msg notification: {:?}", err))?;
     if val.len() >= 4 {
-         if let None = msg_char.get_write_fd() {
-             msg_char.acquire_write().map_err(|err| 
+        if let None = msg_char.get_write_fd() {
+            msg_char.acquire_write().map_err(|err| {
                 format!("Failed to acquire write for msg characteristic: {:?}", err)
-             )?;
-         }
-         msg_char.write(val[0..4].into(), WriteType::WithoutRes).map_err(|err| 
-             format!("Failed to write for msg time to msg characteristic: {:?}", err)
-         )?;
-     };
-     Ok(val)
+            })?;
+        }
+        msg_char
+            .write(val[0..4].into(), WriteType::WithoutRes)
+            .map_err(|err| {
+                format!(
+                    "Failed to write for msg time to msg characteristic: {:?}",
+                    err
+                )
+            })?;
+    };
+    Ok(val)
 }
 
 struct RecvStats {
@@ -419,32 +442,36 @@ impl RecvStats {
             recv_pkts_cnt_total: 0,
             recv_bytes: 0,
             recv_bytes_total: 0,
-            enabled
+            enabled,
         }
-
     }
     fn update_data(&mut self, len: usize) {
-        if !self.enabled { return };
+        if !self.enabled {
+            return;
+        };
         self.recv_pkts_cnt += 1;
         self.recv_pkts_cnt_total += 1;
         self.recv_bytes += len;
         self.recv_bytes_total += len;
     }
     fn print_time(&mut self) {
-        if !self.enabled { return; }
+        if !self.enabled {
+            return;
+        }
         let now = Instant::now();
         let since = now.duration_since(self.stats_period_start);
         if since > self.target_dur {
             let since_secs = since.as_secs_f64();
             eprintln!("Receiving stats:\n\tPeriod throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes", self.recv_bytes as f64 / since_secs, self.recv_pkts_cnt as f64 / since_secs, self.recv_bytes.checked_div(self.recv_pkts_cnt).unwrap_or(0));
 
-            let since_secs_total =
-                now.duration_since(self.stats_start_total).as_secs_f64();
+            let since_secs_total = now.duration_since(self.stats_start_total).as_secs_f64();
             eprintln!(
                 "\tTotal throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes\n",
                 self.recv_bytes_total as f64 / since_secs_total,
                 self.recv_pkts_cnt_total as f64 / since_secs_total,
-                self.recv_bytes_total.checked_div(self.recv_pkts_cnt_total).unwrap_or(0)
+                self.recv_bytes_total
+                    .checked_div(self.recv_pkts_cnt_total)
+                    .unwrap_or(0)
             );
 
             // reset period stats

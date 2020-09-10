@@ -1,5 +1,4 @@
 use std::ops::{Deref, DerefMut, Mul, MulAssign};
-use std::slice::SliceIndex;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub red: u8,

@@ -1,6 +1,5 @@
 use crate::{Error, LedMsg};
 use rustable::UUID;
-use std::rc::Rc;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -26,9 +25,6 @@ fn parse_time_signal(v: &[u8]) -> u32 {
     u32::from_be_bytes(bytes)
 }
 
-fn ecp_uuid_rc() -> Rc<str> {
-    ECP_UUID.into()
-}
 enum Status {
     Running(JoinHandle<Result<(), Error>>),
     Terminated,

@@ -1,28 +1,19 @@
-use super::{
-    ecp_buf1, ecp_bufs, ecp_uuid_rc, parse_time_signal, BMsg, BleOptions, Status, ECP_BUF1_BASE,
-    ECP_UUID,
-};
+use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID};
 use crate::{Error, LedMsg, Sender};
 use nix::poll::{poll, PollFd, PollFlags};
 use rustable::gatt::{
     CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service, WriteType,
 };
 use rustable::interfaces::BLUEZ_FAILED;
-use rustable::{Bluetooth as BT, Device, ToUUID, ValOrFn, UUID};
+use rustable::{Bluetooth as BT, ToUUID, ValOrFn};
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
-use std::thread::{sleep, spawn, JoinHandle};
+use std::sync::mpsc::{sync_channel, SyncSender, TryRecvError};
+use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
-
-const MAX_OUT: usize = 32;
-const MIN_SLEEP: u64 = 5; // milliseconnds
-const INIT_CHANGE: f64 = 2.0;
-const STABILIZE_MAX: f64 = 0.25;
 
 struct Bluetooth {
     blue: BT,
@@ -31,29 +22,6 @@ struct Bluetooth {
     msgs: Rc<RefCell<[Option<LedMsg>; 256]>>,
     last_sent: Rc<Cell<u32>>,
     wait: Rc<Cell<Duration>>,
-}
-fn find_in_buf(sorted: &VecDeque<u32>, target: u32) -> usize {
-    if sorted.len() == 0 {
-        return 0;
-    }
-    let mut lower = 0;
-    let mut upper = sorted.len();
-    while lower < upper {
-        let idx = (lower + upper) / 2;
-        if sorted[idx] == target {
-            return idx;
-        }
-        if sorted[idx] > target {
-            upper = idx;
-        } else {
-            lower = idx + 1;
-        }
-    }
-    if sorted[lower] > target {
-        lower - 1
-    } else {
-        lower
-    }
 }
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
@@ -155,17 +123,6 @@ impl Bluetooth {
         self.blue.register_application()?;
         Ok(())
     }
-    fn cur_time(&self) -> u32 {
-        self.time.get().wrapping_add(
-            Instant::now()
-                .duration_since(self.last_set.get())
-                .as_micros() as u32,
-        )
-    }
-    fn process_requests(&mut self) -> Result<(), Error> {
-        self.blue.process_requests()?;
-        Ok(())
-    }
 }
 fn time_fn(time: u32, last_set: Instant, now: Instant) -> u32 {
     time.wrapping_add(now.duration_since(last_set).as_micros() as u32)
@@ -179,7 +136,7 @@ fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
     let target = Instant::now() + dur;
     let bt_fd = bt.blue.as_raw_fd();
     let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
-    let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+    let notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
     let notify_fd = match notify_char.get_write_fd() {
         Some(fd) => fd,
         None => -1,

@@ -11,7 +11,7 @@ use rustable;
 #[cfg(test)]
 pub mod tests;
 
-use ham::{IntoPacketReceiver, PacketReceiver, PacketSender};
+use ham::{PacketReceiver, PacketSender};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
