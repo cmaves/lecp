@@ -186,12 +186,12 @@ fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
 	loop {
 		if let Ok(i) = poll(&mut polls, sleep_time as i32) {
 			if i > 0 {
-			if let Some(evts) = polls[0].revents() {
+			if let Some(_) = polls[0].revents() {
 				let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
 				let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
 				notify_char.check_write_fd()?;
 			}
-			if let Some(evts) = polls[1].revents() {
+			if let Some(_) = polls[1].revents() {
 				bt.blue.process_requests()?;
 			}
 			}
