@@ -49,6 +49,7 @@ pub enum Error {
     Unrecoverable(String),
     Ham(ham::Error),
     Timeout(String),
+    Misc(String),
     #[cfg(feature = "bluetooth")]
     Bluetooth(rustable::Error),
 }

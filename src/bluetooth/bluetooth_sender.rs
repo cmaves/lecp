@@ -1,18 +1,21 @@
-use super::{ecp_buf1, ecp_bufs, ecp_uuid_rc, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID, parse_time_signal};
+use super::{
+    ecp_buf1, ecp_bufs, ecp_uuid_rc, parse_time_signal, BMsg, BleOptions, Status, ECP_BUF1_BASE,
+    ECP_UUID,
+};
 use crate::{Error, LedMsg, Sender};
+use nix::poll::{poll, PollFd, PollFlags};
 use rustable::gatt::{
-    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service, WriteType
+    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service, WriteType,
 };
 use rustable::interfaces::BLUEZ_FAILED;
 use rustable::{Bluetooth as BT, Device, ToUUID, ValOrFn, UUID};
 use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
+use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::{sleep, spawn, JoinHandle};
 use std::time::{Duration, Instant};
-use std::collections::VecDeque;
-use std::os::unix::io::AsRawFd;
-use nix::poll::{poll, PollFd, PollFlags};
 
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
 
@@ -26,31 +29,31 @@ struct Bluetooth {
     time: Rc<Cell<u32>>,
     last_set: Rc<Cell<Instant>>,
     msgs: Rc<RefCell<[Option<LedMsg>; 256]>>,
-	last_sent: Rc<Cell<u32>>,
-	wait: Rc<Cell<Duration>>
+    last_sent: Rc<Cell<u32>>,
+    wait: Rc<Cell<Duration>>,
 }
 fn find_in_buf(sorted: &VecDeque<u32>, target: u32) -> usize {
-	if sorted.len() == 0 {
-		return 0;
-	}
-	let mut lower = 0;
-	let mut upper = sorted.len();
-	while lower < upper {
-		let idx = (lower + upper) / 2;
-		if sorted[idx] == target {
-			return idx;
-		}
-		if sorted[idx] > target {
-			upper = idx;
-		} else {
-			lower = idx + 1;
-		}
-	}
-	if sorted[lower] > target {
-		lower - 1
-	} else {
-		lower
-	}
+    if sorted.len() == 0 {
+        return 0;
+    }
+    let mut lower = 0;
+    let mut upper = sorted.len();
+    while lower < upper {
+        let idx = (lower + upper) / 2;
+        if sorted[idx] == target {
+            return idx;
+        }
+        if sorted[idx] > target {
+            upper = idx;
+        } else {
+            lower = idx + 1;
+        }
+    }
+    if sorted[lower] > target {
+        lower - 1
+    } else {
+        lower
+    }
 }
 impl Bluetooth {
     fn new(blue_path: String, verbose: u8) -> Result<Self, Error> {
@@ -62,8 +65,8 @@ impl Bluetooth {
             time: Rc::new(Cell::new(0)),
             last_set: Rc::new(Cell::new(Instant::now())),
             msgs: Rc::new(RefCell::new([None; 256])),
-			last_sent: Rc::new(Cell::new(0)),
-			wait: Rc::new(Cell::new(Duration::from_secs_f64(1.0 / 32.0)))
+            last_sent: Rc::new(Cell::new(0)),
+            wait: Rc::new(Cell::new(Duration::from_secs_f64(1.0 / 32.0))),
         };
         ret.init_service()?;
         Ok(ret)
@@ -77,39 +80,39 @@ impl Bluetooth {
         flags.read = true;
         flags.notify = true;
         let uuids = ecp_bufs();
-		let mut notify_flags = flags;
-		notify_flags.write_wo_response = true;
+        let mut notify_flags = flags;
+        notify_flags.write_wo_response = true;
         let mut base = LocalCharBase::new(&uuids[0], flags);
-		base.enable_write_fd(true);
-		let last_sent_clone = self.last_sent.clone();
-		let wait_clone = self.wait.clone();
-		let mut lat_total: i64 = 0;
-		let mut lat_cnt = 0;
-		let mut last_lat_total: i64 = 0;
-		base.write_callback = Some(Box::new(move |bytes| {
-			if bytes.len() != 4 {
-				return Err((BLUEZ_FAILED.to_string(), Some("Invalid length".to_string())));
-			}
-			let time = parse_time_signal(bytes);
-			let last_sent = last_sent_clone.get();
-			let diff = last_sent.wrapping_sub(time);
-			lat_cnt += 1;
-			lat_total += diff as i64;
-			if lat_cnt >= 32 {
-				let lat_growth = (lat_total as i64) - (last_lat_total as i64);
-				let mult = if lat_growth <= 0 {
-					31.0 / 32.0
-				} else {
-					40.0 / 32.0
-				};
-				wait_clone.set(wait_clone.get().mul_f64(mult));
-				lat_cnt = 0;
-				last_lat_total = lat_total;
-				lat_total = 0;
-			}
-			Ok((None, false))
-		}));
-		sender_service.add_char(base);
+        base.enable_write_fd(true);
+        let last_sent_clone = self.last_sent.clone();
+        let wait_clone = self.wait.clone();
+        let mut lat_total: i64 = 0;
+        let mut lat_cnt = 0;
+        let mut last_lat_total: i64 = 0;
+        base.write_callback = Some(Box::new(move |bytes| {
+            if bytes.len() != 4 {
+                return Err((BLUEZ_FAILED.to_string(), Some("Invalid length".to_string())));
+            }
+            let time = parse_time_signal(bytes);
+            let last_sent = last_sent_clone.get();
+            let diff = last_sent.wrapping_sub(time);
+            lat_cnt += 1;
+            lat_total += diff as i64;
+            if lat_cnt >= 32 {
+                let lat_growth = (lat_total as i64) - (last_lat_total as i64);
+                let mult = if lat_growth <= 0 {
+                    31.0 / 32.0
+                } else {
+                    40.0 / 32.0
+                };
+                wait_clone.set(wait_clone.get().mul_f64(mult));
+                lat_cnt = 0;
+                last_lat_total = lat_total;
+                lat_total = 0;
+            }
+            Ok((None, false))
+        }));
+        sender_service.add_char(base);
         for uuid in &uuids[1..] {
             let mut base = LocalCharBase::new(uuid, flags);
             base.notify_fd_buf = Some(256);
@@ -173,35 +176,38 @@ pub struct BluetoothSender {
 }
 
 fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
-	let target = Instant::now() + dur;
-	let bt_fd = bt.blue.as_raw_fd();
-	let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
-	let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
-	let notify_fd = match notify_char.get_write_fd() {
-		Some(fd) => fd,
-		None => -1
-	};
-	let mut polls = [PollFd::new(notify_fd, PollFlags::POLLIN), PollFd::new(bt_fd, PollFlags::POLLIN)];
-	let mut sleep_time = target.saturating_duration_since(Instant::now()).as_millis();
-	loop {
-		if let Ok(i) = poll(&mut polls, sleep_time as i32) {
-			if i > 0 {
-			if let Some(_) = polls[0].revents() {
-				let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
-				let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
-				notify_char.check_write_fd()?;
-			}
-			if let Some(_) = polls[1].revents() {
-				bt.blue.process_requests()?;
-			}
-			}
-		}
-		match target.checked_duration_since(Instant::now()) {
-			Some(sleep) => sleep_time = sleep.as_millis(),
-			None => break
-		}
-	}
-	Ok(())
+    let target = Instant::now() + dur;
+    let bt_fd = bt.blue.as_raw_fd();
+    let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
+    let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+    let notify_fd = match notify_char.get_write_fd() {
+        Some(fd) => fd,
+        None => -1,
+    };
+    let mut polls = [
+        PollFd::new(notify_fd, PollFlags::POLLIN),
+        PollFd::new(bt_fd, PollFlags::POLLIN),
+    ];
+    let mut sleep_time = target.saturating_duration_since(Instant::now()).as_millis();
+    loop {
+        if let Ok(i) = poll(&mut polls, sleep_time as i32) {
+            if i > 0 {
+                if let Some(_) = polls[0].revents() {
+                    let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
+                    let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+                    notify_char.check_write_fd()?;
+                }
+                if let Some(_) = polls[1].revents() {
+                    bt.blue.process_requests()?;
+                }
+            }
+        }
+        match target.checked_duration_since(Instant::now()) {
+            Some(sleep) => sleep_time = sleep.as_millis(),
+            None => break,
+        }
+    }
+    Ok(())
 }
 impl BluetoothSender {
     pub fn new(blue_path: String, options: BleOptions) -> Result<Self, Error> {
@@ -220,7 +226,7 @@ impl BluetoothSender {
             let mut sent_bytes = 0;
             let mut sent_bytes_total = 0;
             loop {
-				process_requests(bt.wait.get(), &mut bt)?;
+                process_requests(bt.wait.get(), &mut bt)?;
                 match recv.try_recv() {
                     Ok(msg) => match msg {
                         BMsg::SendMsg(msgs, start) => {

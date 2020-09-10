@@ -1,16 +1,16 @@
-use super::{ecp_bufs, BMsg, BleOptions, Status, ECP_BUF1_BASE, ECP_UUID, parse_time_signal};
+use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_UUID, ECP_TIME};
 use crate::{Error, LedMsg, Receiver};
-use nix::poll::{PollFd, PollFlags, poll};
-use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service, WriteType};
+use nix::poll::{poll, PollFd, PollFlags};
+use rustable::gatt::{CharFlags, Characteristic, NotifyPoller, Service, WriteType, CharValue};
 use rustable::interfaces::{BLUEZ_DEST, MANGAGED_OBJ_CALL, OBJ_MANAGER_IF_STR};
 use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
-use std::os::unix::io::AsRawFd;
 
 struct Bluetooth {
     blue: BT,
@@ -87,51 +87,6 @@ impl Bluetooth {
             }
         }
     }
-    // Panics if the mac is non existent or ECP service is not avaliable on device
-    fn collect_notify_fds(&mut self, mac: &MAC) -> Result<NotifyPoller, rustable::Error> {
-        let mut device = if let Some(device) = self.blue.get_device(&mac) {
-            device
-        } else {
-            unreachable!()
-        };
-        let ecp_uuid: UUID = ECP_UUID.into();
-        let ecp_bufs = ecp_bufs();
-        if let Some(mut ecp_service) = device.get_service(&ecp_uuid) {
-            // let mut fds = Vec::with_capacity(10);
-            let mut count = 0;
-            let mut fds: [RawFd; 10] = [0; 10];
-            for uuid in &ecp_bufs {
-                if let Some(mut r_char) = ecp_service.get_char(uuid) {
-                    match r_char.acquire_notify() {
-                        Ok(fd) => {
-                            fds[count] = fd;
-                            count += 1
-                        }
-                        Err(e) => {
-                            eprintln!("Error acquiring notify fd: {:?}", e);
-                            break;
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-            if count == 10 {
-                Ok(NotifyPoller::new(&fds))
-            } else {
-                Err(rustable::Error::DbusReqErr(format!(
-                    "Failed to get notify for {}",
-                    ecp_bufs[count]
-                )))
-            }
-        } else {
-            unreachable!()
-        }
-    }
-    /*
-    fn poll_for_msgs(&mut self) -> Result<Vec<LedMsg>, Error> {
-
-    }*/
 }
 
 enum RecvMsg {
@@ -240,20 +195,18 @@ impl BluetoothReceiver {
                     None => continue, //TODO: Add verbose error message
                 }
 
-
                 let blue_fd = blue.blue.as_raw_fd();
                 let pollin = PollFlags::POLLIN;
-                let mut polls = [PollFd::new(time_fd, pollin), PollFd::new(msg_fd, pollin), PollFd::new(blue_fd, pollin)];
+                let mut polls = [
+                    PollFd::new(time_fd, pollin),
+                    PollFd::new(msg_fd, pollin),
+                    PollFd::new(blue_fd, pollin),
+                ];
                 let wait = Duration::from_secs_f64(1.0 / 32.0).as_millis();
 
                 // the stats data
                 let target_dur = Duration::from_secs(options.stats.into());
-                let stats_start_total = Instant::now();
-                let mut stats_period_start = stats_start_total;
-                let mut recv_pkts_cnt = 0;
-                let mut recv_pkts_cnt_total = 0;
-                let mut recv_bytes = 0;
-                let mut recv_bytes_total = 0;
+                let mut recv_stats = RecvStats::new(options.stats != 0, target_dur);
 
                 // begin notification and render loop
                 loop {
@@ -267,99 +220,40 @@ impl BluetoothReceiver {
                     }
                     if let Ok(i) = poll(&mut polls, wait as i32) {
                         if i > 0 {
-                            if let Some(_) = polls[0].revents() {
-                                let mut err_state = false;
-                                let now = Instant::now();
-                                // receive message from time signal
-                                let mut device = match blue.blue.get_device(&mac) {
-                                     Some(dev) => dev,
-                                    None => break,
-                                };
-                                let mut ecp_service = match device.get_service(&ecp_uuid) {
-                                    Some(serv) => serv,
-                                    None => break,
-                                };
-                                let mut time_char = match ecp_service.get_char(&ecp_bufs[5]) {
-                                // receive the most recent time from the sending device
-                                    Some(time_char) => time_char,
-                                    None => {
-                                        err_state = true;
-                                        break;
-                                    }
-                                };
-                                let mut time_to_send = None;
-                                loop {
-                                    /* We only care about the latest value, and we want absolutely no delay
-                                     * in the time, so we will loop repeatedly to get the latest value
-                                     * without multiple iterations to be ASAP.
-                                     */
-                                    match time_char.try_get_notify() {
-                                        Ok(value) => if value.len() == 4 {
-                                            let time = parse_time_signal(value.as_slice());
-                                            time_to_send = Some((time, now));
-                                        },
-                                        Err(err) => match err {
-                                            rustable::Error::Timeout => break,
-                                            err => {
-                                                if options.verbose >= 1 {
-                                                    eprintln!("Failed to retrieve notification from time characteristic: {:?}", err);
-                                                }
-                                                err_state = true;
-                                                break;
+                            let evts = polls[0].revents().unwrap();
+                            if !evts.is_empty() {
+                                if let Err(err) = recv_time(&mac, &mut blue, &send_msgs) {
+                                    match err {
+                                        Error::Misc(err) => {
+                                            if options.verbose >= 1 {
+                                                eprintln!("{}", err);
                                             }
+                                            break;
                                         },
-                                    }
-                                }
-                                if err_state { break; }
-                                if let Some((time, now)) = time_to_send {
-                                    if let Err(_) = send_msgs.send(RecvMsg::Time(time, now)) {
-                                        return Err(Error::Unrecoverable(
-                                            "Receiver is disconnected!".to_string()
-                                        ));
+                                        Error::Unrecoverable(err) => return Err(Error::Unrecoverable(err)),
+                                        _ => unreachable!()
                                     }
                                 }
                             }
-                            if let Some(_) = polls[1].revents() {
-                                let mut device = match blue.blue.get_device(&mac) {
-                                     Some(dev) => dev,
-                                    None => break,
-                                };
-                                let mut ecp_service = match device.get_service(&ecp_uuid) {
-                                    Some(serv) => serv,
-                                    None => break,
-                                };
-                                let mut msg_char = match ecp_service.get_char(&ecp_bufs[0]) {
-                                    Some(msg_char) => msg_char,
-                                    None => break,
-                                };
-                                let val = match msg_char.try_get_notify() {
+                            let evts = polls[1].revents().unwrap();
+                            if !evts.is_empty() {
+                                let val = match recv_val(&mac, &mut blue) {
                                     Ok(val) => val,
-                                    Err(_) => break,
-
+                                    Err(err) => {
+                                        if options.verbose >= 1 {
+                                            eprintln!("{}", err);
+                                        }
+                                        break;
+                                    }
                                 };
-                                if val.len() >= 4 {
-							 		if let None = msg_char.get_write_fd() {
-								        if let Err(_) = msg_char.acquire_write() {
-								    		break;
-								    	}
-								    }
-								    if let Err(_) = msg_char.write(val[0..4].into(), WriteType::WithRes) {
-									    break;
-									}
-							    }
                                 let msgs = match LedMsg::deserialize(val.as_slice()) {
                                     Ok(recvd) => {
                                         if options.verbose >= 3 {
                                             eprintln!("Deserialized msgs: {:?}", recvd);
                                         }
-                                        if options.stats != 0 {
-                                            recv_pkts_cnt += 1;
-                                            recv_pkts_cnt_total += 1;
-                                            recv_bytes += val.len();
-                                            recv_bytes_total += val.len();
-                                        }
+                                        recv_stats.update_data(val.len());
                                         recvd
-                                    },
+                                    }
                                     Err(e) => {
                                         if options.verbose >= 3 {
                                             eprintln!(
@@ -386,39 +280,22 @@ impl BluetoothReceiver {
                                 }
                             }
                             // handle Dbus messages
-                            if let Some(_) = polls[2].revents() {
+                            let evts = polls[2].revents().unwrap();
+                            if !evts.is_empty() {
                                 blue.blue.process_requests()?;
                             }
                         }
 
                         // do statistic printing if enabled
-                        if options.stats != 0 {
-                            let now = Instant::now();
-                            let since = now.duration_since(stats_period_start);
-                            if since > target_dur {
-                                let since_secs = since.as_secs_f64();
-                                eprintln!("Receiving stats:\n\tPeriod throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes", recv_bytes as f64 / since_secs, recv_pkts_cnt as f64 / since_secs, recv_bytes.checked_div(recv_pkts_cnt).unwrap_or(0));
-    
-                                let since_secs_total =
-                                    now.duration_since(stats_start_total).as_secs_f64();
-                                eprintln!(
-                                    "\tTotal throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes\n",
-                                    recv_bytes_total as f64 / since_secs_total,
-                                    recv_pkts_cnt_total as f64 / since_secs_total,
-                                    recv_bytes_total.checked_div(recv_pkts_cnt_total).unwrap_or(0)
-                                );
-    
-                                // reset period stats
-                                stats_period_start = now;
-                                recv_pkts_cnt = 0;
-                                recv_bytes = 0;
-                            }
-                        }
+                        recv_stats.print_time();
                     }
 
-                    if let Some(mut dev) = blue.blue.get_device(&mac) {
-                        dev.forget_service(&ecp_uuid);
+                }
+                if let Some(mut dev) = blue.blue.get_device(&mac) {
+                    if options.verbose >= 2 {
+                        eprintln!("Forgetting ecp service for device ({}).", mac);
                     }
+                    dev.forget_service(&ecp_uuid);
                 }
             }
         }));
@@ -450,6 +327,130 @@ impl BluetoothReceiver {
                 ))),
             },
             Status::Terminated => Err(Error::BadInput("Thread already terminated".to_string())),
+        }
+    }
+}
+
+
+fn recv_time(mac: &MAC, blue: &mut Bluetooth, send_msgs: &mpsc::SyncSender<RecvMsg>) -> Result<(), Error> {
+    let now = Instant::now();
+    // receive message from time signal
+    let mut device = blue.blue.get_device(&mac).ok_or_else(|| 
+        Error::Bluetooth(rustable::Error::BadInput(format!("Device ({}) lost while receiving time.", mac)))
+    )?;
+    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(||
+        Error::Bluetooth(rustable::Error::BadInput(format!("Ecp Service lost on device ({}) lost while receiving time.", mac)))
+    )?;
+    let mut time_char = ecp_service.get_char(ECP_TIME).ok_or_else(||
+        Error::Bluetooth(rustable::Error::BadInput(format!("Time characteristic lost on device ({}).", mac)))
+    )?;
+
+    let mut time_to_send = None;
+    loop {
+        /* We only care about the latest value, and we want absolutely no delay
+         * in the time, so we will loop repeatedly to get the latest value
+         * without multiple iterations to be ASAP.
+         */
+        match time_char.try_get_notify() {
+            Ok(value) => {
+                if value.len() == 4 {
+                    let time = parse_time_signal(value.as_slice());
+                    time_to_send = Some((time, now));
+                }
+            }
+            Err(err) => match err {
+                rustable::Error::Timeout => break,
+                err => {
+                    return Err(Error::Bluetooth(rustable::Error::BadInput(format!("Failed to retrieve notification from time characteristic: {:?}", err))));
+                }
+            },
+        }
+    }
+    let (time, now) = time_to_send.unwrap();
+    send_msgs.send(RecvMsg::Time(time, now)).map_err(|_| Error::Unrecoverable(
+        "Receiver is disconnected!".to_string())
+    )
+}
+
+fn recv_val(mac: &MAC, blue: &mut Bluetooth, ) -> Result<CharValue, String> {
+    let mut device = blue.blue.get_device(&mac).ok_or_else(|| 
+        format!("Device ({}) lost while receiving msgs.", mac)
+    )?;
+    let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(||
+        format!("Ecp Service lost on device ({}) lost while receiving msgs.", mac)
+    )?;
+    let mut msg_char = ecp_service.get_char(ECP_TIME).ok_or_else(||
+        format!("Msgs characteristic lost on device ({}).", mac)
+    )?;
+    let val = msg_char.try_get_notify().map_err(|err| 
+        format!("Failed to get msg notification: {:?}", err)
+    )?;
+    if val.len() >= 4 {
+         if let None = msg_char.get_write_fd() {
+             msg_char.acquire_write().map_err(|err| 
+                format!("Failed to acquire write for msg characteristic: {:?}", err)
+             )?;
+         }
+         msg_char.write(val[0..4].into(), WriteType::WithoutRes).map_err(|err| 
+             format!("Failed to write for msg time to msg characteristic: {:?}", err)
+         )?;
+     };
+     Ok(val)
+}
+
+struct RecvStats {
+    target_dur: Duration,
+    stats_start_total: Instant,
+    stats_period_start: Instant,
+    recv_pkts_cnt: usize,
+    recv_pkts_cnt_total: usize,
+    recv_bytes: usize,
+    recv_bytes_total: usize,
+    enabled: bool,
+}
+impl RecvStats {
+    fn new(enabled: bool, target_dur: Duration) -> Self {
+        let now = Instant::now();
+        RecvStats {
+            target_dur,
+            stats_start_total: now,
+            stats_period_start: now,
+            recv_pkts_cnt: 0,
+            recv_pkts_cnt_total: 0,
+            recv_bytes: 0,
+            recv_bytes_total: 0,
+            enabled
+        }
+
+    }
+    fn update_data(&mut self, len: usize) {
+        if !self.enabled { return };
+        self.recv_pkts_cnt += 1;
+        self.recv_pkts_cnt_total += 1;
+        self.recv_bytes += len;
+        self.recv_bytes_total += len;
+    }
+    fn print_time(&mut self) {
+        if !self.enabled { return; }
+        let now = Instant::now();
+        let since = now.duration_since(self.stats_period_start);
+        if since > self.target_dur {
+            let since_secs = since.as_secs_f64();
+            eprintln!("Receiving stats:\n\tPeriod throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes", self.recv_bytes as f64 / since_secs, self.recv_pkts_cnt as f64 / since_secs, self.recv_bytes.checked_div(self.recv_pkts_cnt).unwrap_or(0));
+
+            let since_secs_total =
+                now.duration_since(self.stats_start_total).as_secs_f64();
+            eprintln!(
+                "\tTotal throughput: {:.0} Bps, {:.1} Msgs/s, Avg size: {} bytes\n",
+                self.recv_bytes_total as f64 / since_secs_total,
+                self.recv_pkts_cnt_total as f64 / since_secs_total,
+                self.recv_bytes_total.checked_div(self.recv_pkts_cnt_total).unwrap_or(0)
+            );
+
+            // reset period stats
+            self.stats_period_start = now;
+            self.recv_pkts_cnt = 0;
+            self.recv_bytes = 0;
         }
     }
 }
