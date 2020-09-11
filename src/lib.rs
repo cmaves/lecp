@@ -173,12 +173,12 @@ impl LedMsg {
         }
         Ok(ret)
     }
-    fn serialize(msgs: &[LedMsg], ret: &mut [u8]) -> (usize, usize) {
+    fn serialize(msgs: &[LedMsg], ret: &mut [u8], time: Option<u32>) -> (usize, usize) {
         assert!(ret.len() >= 7);
-        let time = match msgs.get(0) {
-            Some(msg) => msg.cur_time,
-            None => 0,
-        };
+		let time = match time {
+			Some(t) => t,
+			None => msgs[0].cur_time
+		};
         ret[0..4].copy_from_slice(&time.to_be_bytes());
         let mut i = 4;
         for (j, msg) in msgs.iter().enumerate() {
@@ -329,7 +329,7 @@ impl<T: PacketSender> Sender for T {
 
         while i < msgs.len() {
             let mut buf = vec![0; mtu];
-            let (bytes, procs) = LedMsg::serialize(&msgs[i..], &mut buf);
+            let (bytes, procs) = LedMsg::serialize(&msgs[i..], &mut buf, None);
             i += procs;
             buf.resize(bytes, 0);
             self.send_packet(

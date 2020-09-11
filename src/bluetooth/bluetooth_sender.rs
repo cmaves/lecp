@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const ECP_TIME: &'static str = "79f4bb2c-7885-4584-8ef9-ae205b0eb345";
 
 struct Bluetooth {
+    verbose: u8,
     blue: BT,
     time: Rc<Cell<u32>>,
     last_set: Rc<Cell<Instant>>,
@@ -29,6 +30,7 @@ impl Bluetooth {
         blue.set_filter(None)?;
         blue.verbose = verbose;
         let mut ret = Bluetooth {
+            verbose,
             blue,
             time: Rc::new(Cell::new(0)),
             last_set: Rc::new(Cell::new(Instant::now())),
@@ -50,14 +52,16 @@ impl Bluetooth {
         let uuids = ecp_bufs();
         let mut notify_flags = flags;
         notify_flags.write_wo_response = true;
-        let mut base = LocalCharBase::new(&uuids[0], flags);
+        let mut base = LocalCharBase::new(&uuids[0], notify_flags);
         base.enable_write_fd(true);
         let last_sent_clone = self.last_sent.clone();
         let wait_clone = self.wait.clone();
         let mut lat_total: i64 = 0;
         let mut lat_cnt = 0;
         let mut last_lat_total: i64 = 0;
+        let verbose = self.verbose;
         base.write_callback = Some(Box::new(move |bytes| {
+            eprintln!("Calling write_callback on: {:?}", bytes);
             if bytes.len() != 4 {
                 return Err((BLUEZ_FAILED.to_string(), Some("Invalid length".to_string())));
             }
@@ -68,12 +72,16 @@ impl Bluetooth {
             lat_total += diff as i64;
             if lat_cnt >= 32 {
                 let lat_growth = (lat_total as i64) - (last_lat_total as i64);
-                let mult = if lat_growth <= 0 {
-                    31.0 / 32.0
+                let (mult, verb_str) = if lat_growth <= 0 {
+                    (31.0 / 32.0, "reducing wait interval")
                 } else {
-                    40.0 / 32.0
+                    (40.0 / 32.0, "increasing wait interval")
                 };
-                wait_clone.set(wait_clone.get().mul_f64(mult));
+                if verbose >= 3 {
+                    eprintln!("lat_growth: {}, {}", lat_growth, verb_str);
+                }
+				let dur = wait_clone.get().mul_f64(mult).min(Duration::from_millis(500));
+                wait_clone.set(dur);
                 lat_cnt = 0;
                 last_lat_total = lat_total;
                 lat_total = 0;
@@ -102,7 +110,9 @@ impl Bluetooth {
                     *dst = src;
                     cnt += 1;
                 }
-                let (len, msgs_consumed) = LedMsg::serialize(&msgs[..cnt], cv.as_mut_slice());
+				let msg_buf = &msgs[..cnt];
+				let time = msg_buf.get(0).map_or(0, |msg| msg.cur_time);
+                let (len, msgs_consumed) = LedMsg::serialize(&msgs[..cnt], cv.as_mut_slice(), Some(time));
                 debug_assert_eq!(msgs_consumed, cnt);
                 cv.resize(len, 0);
                 cv
@@ -149,12 +159,14 @@ fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
     loop {
         if let Ok(i) = poll(&mut polls, sleep_time as i32) {
             if i > 0 {
-                if let Some(_) = polls[0].revents() {
+                let evts = polls[0].revents().unwrap();
+                if !evts.is_empty() {
                     let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
                     let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
                     notify_char.check_write_fd()?;
                 }
-                if let Some(_) = polls[1].revents() {
+                let evts = polls[1].revents().unwrap();
+                if !evts.is_empty() {
                     bt.blue.process_requests()?;
                 }
             }
@@ -227,11 +239,13 @@ impl BluetoothSender {
                             let mut notify_char = service.get_char(&ecp_bufs[0]).unwrap();
                             let mtu = notify_char.get_notify_mtu().unwrap_or(23) - 3; // The 3 accounts for ATT HDR
                             let mut written = 0;
+							let sent_time = msgs[0].cur_time;
+							bt.last_sent.set(sent_time);
                             while written < msgs.len() {
                                 let mut cv = CharValue::new(mtu as usize);
 
                                 let (len, consumed) =
-                                    LedMsg::serialize(&msgs[written..], cv.as_mut_slice());
+                                    LedMsg::serialize(&msgs[written..], cv.as_mut_slice(), Some(sent_time));
                                 cv.resize(len, 0);
                                 written += consumed;
                                 notify_char.write_wait(cv, WriteType::WithoutRes)?;
