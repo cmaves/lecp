@@ -86,7 +86,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         let mut last_active = 0;
         let mut first_active = 256;
         let cur_time = self.recv.cur_time();
-        if self.verbose >= 3 {
+        if self.verbose >= 4 {
             eprintln!("cur_time: {}", cur_time);
         }
         for (i, msg) in self.msgs.iter().enumerate().rev() {

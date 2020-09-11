@@ -1,4 +1,4 @@
-use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_TIME, ECP_UUID};
+use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_TIME, ECP_UUID, ECP_BUF1_BASE};
 use crate::{Error, LedMsg, Receiver};
 use nix::poll::{poll, PollFd, PollFlags};
 use rustable::gatt::{CharValue, Characteristic, Service, WriteType};
@@ -157,7 +157,7 @@ impl BluetoothReceiver {
                             }
                         } else {
                             eprintln!(
-                                "Expected time characteristic to be over length 4 (was {}).",
+                                "Expected time characteristic to be length 4 (was {}). reconnecting...",
                                 cv.len()
                             );
                             continue;
@@ -207,7 +207,12 @@ impl BluetoothReceiver {
                 let mut recv_stats = RecvStats::new(options.stats != 0, target_dur);
 
                 // begin notification and render loop
+                let mut loop_cnt = 0;
                 loop {
+                    loop_cnt += 1;
+                    if options.verbose >= 3 {
+                        eprintln!("beginning iteration: {}", loop_cnt);
+                    }
                     // check for incoming message from main thread
                     for bmsg in recv_bmsg.try_iter() {
                         match bmsg {
@@ -218,6 +223,9 @@ impl BluetoothReceiver {
                     }
                     if let Ok(i) = poll(&mut polls, wait as i32) {
                         if i > 0 {
+                            if options.verbose >= 3{
+                                eprintln!("iteration: {}, poll_avaliable: {:?}", loop_cnt, polls);
+                            }
                             let evts = polls[0].revents().unwrap();
                             if !evts.is_empty() {
                                 if let Err(err) = recv_time(&mac, &mut blue, &send_msgs) {
@@ -338,22 +346,13 @@ fn recv_time(
     let now = Instant::now();
     // receive message from time signal
     let mut device = blue.blue.get_device(&mac).ok_or_else(|| {
-        Error::Bluetooth(rustable::Error::BadInput(format!(
-            "Device ({}) lost while receiving time.",
-            mac
-        )))
+        Error::Misc(format!("Device ({}) lost while receiving time.", mac))
     })?;
     let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(|| {
-        Error::Bluetooth(rustable::Error::BadInput(format!(
-            "Ecp Service lost on device ({}) lost while receiving time.",
-            mac
-        )))
+        Error::Misc(format!("Ecp Service lost on device ({}) lost while receiving time.",mac))
     })?;
     let mut time_char = ecp_service.get_char(ECP_TIME).ok_or_else(|| {
-        Error::Bluetooth(rustable::Error::BadInput(format!(
-            "Time characteristic lost on device ({}).",
-            mac
-        )))
+        Error::Misc(format!("Time characteristic lost on device ({}).",mac))
     })?;
 
     let mut time_to_send = None;
@@ -372,10 +371,8 @@ fn recv_time(
             Err(err) => match err {
                 rustable::Error::Timeout => break,
                 err => {
-                    return Err(Error::Bluetooth(rustable::Error::BadInput(format!(
-                        "Failed to retrieve notification from time characteristic: {:?}",
-                        err
-                    ))));
+                    return Err(Error::Misc(format!(
+                        "Failed to retrieve notification from time characteristic: {:?}", err)));
                 }
             },
         }
@@ -398,7 +395,7 @@ fn recv_val(mac: &MAC, blue: &mut Bluetooth) -> Result<CharValue, String> {
         )
     })?;
     let mut msg_char = ecp_service
-        .get_char(ECP_TIME)
+        .get_char(ECP_BUF1_BASE)
         .ok_or_else(|| format!("Msgs characteristic lost on device ({}).", mac))?;
     let val = msg_char
         .try_get_notify()
