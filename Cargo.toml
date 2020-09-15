@@ -19,7 +19,7 @@ bluetooth = ["rustable"]
 [dependencies]
 clap = "2.33.0"
 gpio-cdev = "0.2.0"
-ham = { version = "0.1.0", optional=true }
+ham = { version = "0.2.0", optional=true }
 rs_ws281x = { version = "0.2.3", optional=true }
 rustable = { path = "/home/cmaves/rustable", optional=true }
 spidev = "0.4.0"
