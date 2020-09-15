@@ -1,3 +1,6 @@
+/// Defines the `Color` and `ColorMap` that are used to set colors on the 
+/// receiver.
+
 use std::ops::{Deref, DerefMut, Mul, MulAssign};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {

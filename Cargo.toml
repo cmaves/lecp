@@ -1,5 +1,5 @@
 [package]
-name = "ecp"
+name = "lecp"
 version = "0.1.0"
 authors = ["Curtis Maves <curtismaves@gmail.com>"]
 edition = "2018"
@@ -19,12 +19,11 @@ bluetooth = ["rustable"]
 [dependencies]
 clap = "2.33.0"
 gpio-cdev = "0.2.0"
-#ham = { git="https://github.com/cmaves/ham", branch = "master", optional = true }
-ham = { path="/home/cmaves/ham", optional = true }
+ham = { version = "0.1.0", optional=true }
 rs_ws281x = { version = "0.2.3", optional=true }
 rustable = { path = "/home/cmaves/rustable", optional=true }
 spidev = "0.4.0"
-nix = "0.17.0"
+nix = "0.18.0"
 
 [dev-dependencies]
 rand = "0.7.3"

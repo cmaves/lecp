@@ -1,7 +1,7 @@
 use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_TIME, ECP_UUID, ECP_BUF1_BASE};
 use crate::{Error, LedMsg, Receiver};
 use nix::poll::{poll, PollFd, PollFlags};
-use rustable::gatt::{CharValue, Characteristic, Service, WriteType};
+use rustable::gatt::{AttValue, WriteType, ReadableAtt, WritableAtt, HasChildren};
 use rustable::{AdType, Advertisement, Bluetooth as BT};
 use rustable::{Device, MAC, UUID};
 use std::os::unix::io::AsRawFd;
@@ -141,7 +141,7 @@ impl BluetoothReceiver {
                     Some(serv) => serv,
                     None => continue,
                 };
-                let mut time_char = match ecp_service.get_char(&ecp_bufs[5]) {
+                let mut time_char = match ecp_service.get_child(&ecp_bufs[5]) {
                     Some(ch) => ch,
                     None => continue, // Add verbose error message
                 };
@@ -179,7 +179,7 @@ impl BluetoothReceiver {
                 }
                 let time_fd = time_char.get_notify_fd().unwrap();
                 let msg_fd;
-                match ecp_service.get_char(&ecp_bufs[0]) {
+                match ecp_service.get_child(&ecp_bufs[0]) {
                     Some(mut ch) => {
                         if let Err(err) = ch.acquire_notify() {
                             eprintln!(
@@ -351,7 +351,7 @@ fn recv_time(
     let mut ecp_service = device.get_service(&ECP_UUID.into()).ok_or_else(|| {
         Error::Misc(format!("Ecp Service lost on device ({}) lost while receiving time.",mac))
     })?;
-    let mut time_char = ecp_service.get_char(ECP_TIME).ok_or_else(|| {
+    let mut time_char = ecp_service.get_child(ECP_TIME).ok_or_else(|| {
         Error::Misc(format!("Time characteristic lost on device ({}).",mac))
     })?;
 
@@ -383,7 +383,7 @@ fn recv_time(
         .map_err(|_| Error::Unrecoverable("Receiver is disconnected!".to_string()))
 }
 
-fn recv_val(mac: &MAC, blue: &mut Bluetooth) -> Result<CharValue, String> {
+fn recv_val(mac: &MAC, blue: &mut Bluetooth) -> Result<AttValue, String> {
     let mut device = blue
         .blue
         .get_device(&mac)
@@ -395,7 +395,7 @@ fn recv_val(mac: &MAC, blue: &mut Bluetooth) -> Result<CharValue, String> {
         )
     })?;
     let mut msg_char = ecp_service
-        .get_char(ECP_BUF1_BASE)
+        .get_child(ECP_BUF1_BASE)
         .ok_or_else(|| format!("Msgs characteristic lost on device ({}).", mac))?;
     let val = msg_char
         .try_get_notify()

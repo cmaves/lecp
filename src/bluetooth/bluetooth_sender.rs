@@ -2,10 +2,10 @@ use super::{ecp_bufs, parse_time_signal, BMsg, BleOptions, Status, ECP_BUF1_BASE
 use crate::{Error, LedMsg, Sender};
 use nix::poll::{poll, PollFd, PollFlags};
 use rustable::gatt::{
-    CharFlags, CharValue, Characteristic, LocalCharBase, LocalServiceBase, Service, WriteType,
+    CharFlags, AttValue, LocalCharBase, LocalServiceBase, WriteType, ValOrFn, WritableAtt, HasChildren
 };
 use rustable::interfaces::BLUEZ_FAILED;
-use rustable::{Bluetooth as BT, ToUUID, ValOrFn};
+use rustable::{Bluetooth as BT, ToUUID};
 use std::cell::{Cell, RefCell};
 use std::os::unix::io::AsRawFd;
 use std::rc::Rc;
@@ -101,7 +101,7 @@ impl Bluetooth {
             let read_fn = move || {
                 let start = i * 64;
                 let end = start + 64;
-                let mut cv = CharValue::new(512);
+                let mut cv = AttValue::new(512);
                 let mut msgs = [LedMsg::default(); 64];
                 let mut cnt = 0;
                 let borrow = rc_msgs.borrow();
@@ -117,7 +117,7 @@ impl Bluetooth {
                 cv.resize(len, 0);
                 cv
             };
-            let mut ecp_char = sender_service.get_char(uuid).unwrap();
+            let mut ecp_char = sender_service.get_child(uuid).unwrap();
             ecp_char.write_val_or_fn(&mut ValOrFn::Function(Box::new(read_fn)));
         }
         let time = self.time.clone();
@@ -128,7 +128,7 @@ impl Bluetooth {
                 .as_ref()
                 .into()
         };
-        let mut time_serv = sender_service.get_char(&uuids[5]).unwrap();
+        let mut time_serv = sender_service.get_child(&uuids[5]).unwrap();
         time_serv.write_val_or_fn(&mut ValOrFn::Function(Box::new(time_closure)));
         self.blue.register_application()?;
         Ok(())
@@ -146,7 +146,7 @@ fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
     let target = Instant::now() + dur;
     let bt_fd = bt.blue.as_raw_fd();
     let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
-    let notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+    let notify_char = ecp_serv.get_child(ECP_BUF1_BASE).unwrap();
     let notify_fd = match notify_char.get_write_fd() {
         Some(fd) => fd,
         None => -1,
@@ -162,7 +162,7 @@ fn process_requests(dur: Duration, bt: &mut Bluetooth) -> Result<(), Error> {
                 let evts = polls[0].revents().unwrap();
                 if !evts.is_empty() {
                     let mut ecp_serv = bt.blue.get_service(ECP_UUID).unwrap();
-                    let mut notify_char = ecp_serv.get_char(ECP_BUF1_BASE).unwrap();
+                    let mut notify_char = ecp_serv.get_child(ECP_BUF1_BASE).unwrap();
                     notify_char.check_write_fd()?;
                 }
                 let evts = polls[1].revents().unwrap();
@@ -232,17 +232,17 @@ impl BluetoothSender {
                             // write out the dirty characteristics and
                             let mut service = bt.blue.get_service(ECP_UUID).unwrap();
                             if notify_time {
-                                let mut character = service.get_char(ECP_TIME).unwrap();
+                                let mut character = service.get_child(ECP_TIME).unwrap();
                                 character.notify()?;
                                 last_notify_time = now;
                             }
-                            let mut notify_char = service.get_char(&ecp_bufs[0]).unwrap();
+                            let mut notify_char = service.get_child(&ecp_bufs[0]).unwrap();
                             let mtu = notify_char.get_notify_mtu().unwrap_or(23) - 3; // The 3 accounts for ATT HDR
                             let mut written = 0;
 							let sent_time = msgs[0].cur_time;
 							bt.last_sent.set(sent_time);
                             while written < msgs.len() {
-                                let mut cv = CharValue::new(mtu as usize);
+                                let mut cv = AttValue::new(mtu as usize);
 
                                 let (len, consumed) =
                                     LedMsg::serialize(&msgs[written..], cv.as_mut_slice(), Some(sent_time));

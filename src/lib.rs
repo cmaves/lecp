@@ -1,5 +1,14 @@
-pub mod controller;
+//! # Lightning Element Control Protocol
+//! This crate is used to remotely control LED elements over a variety of
+//! transmission mechanisms.
+//! Elements are controlled via messages that are serialized in to a byte-stream
+//! and deserialized at the receiver which then controls the lights using GPIO pins.
+//! 
+//! ## Current implemented control mechanisms
+//! - Bluetooth Low Energy with **bluetooth** feature.
+//! - RFM69HCW packet radio with **ham** feature.
 
+pub mod controller;
 pub mod color;
 
 #[cfg(feature = "bluetooth")]
@@ -15,11 +24,21 @@ use ham::{PacketReceiver, PacketSender};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+
+/// `LedMsg` is the message format used control LEDs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedMsg {
+	/// The current time in microseconds from an arbitrary point in time.
     pub cur_time: u32,
+	/// Which one of the 255 possible elements is being controlled.
     pub element: u8,
+	/// The color to be set to. The u8 values are mapped to an actual
+	/// RGBA [Color`] using a [`ColorMap`].
+	///
+	/// [`Color`]: ./color/struct.Color.html
+	/// [`ColorMap`]: ./color/struct.ColorMap.html
     pub color: u8,
+	/// Controls what the LED does.
     pub cmd: Command,
 }
 impl Default for LedMsg {
