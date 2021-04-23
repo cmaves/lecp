@@ -93,7 +93,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
             if self.verbose >= 3 {
                 eprintln!("msg {}: {:?}", i, msg);
             }
-            if cur_time.wrapping_sub(msg.cur_time) <= 5_000_000 {
+            if (cur_time.wrapping_sub(msg.time) as i64).abs() <= 5_000_000 {
                 let e = msg.element as usize;
                 if let None = elements[e] {
                     if e + 1 > last_active {
@@ -191,7 +191,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
         for i in 0..self.msgs.len() {
             let msg = self.msgs[i];
             if elements[msg.element as usize] != Some(i)
-                || (cur_time.wrapping_sub(msg.cur_time) as i32).abs() > 5_000_000
+                || (cur_time.wrapping_sub(msg.time) as i64).abs() > 5_000_000
             // i32 abs() allows for early msgs
             {
                 del += 1;

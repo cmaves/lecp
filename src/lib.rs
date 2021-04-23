@@ -20,8 +20,9 @@ use rustable;
 #[cfg(test)]
 pub mod tests;
 
-use ham::{PacketReceiver, PacketSender};
+// use ham::{PacketReceiver, PacketSender};
 use std::sync::mpsc;
+use std::convert::TryFrom;
 use std::time::{Duration, Instant};
 
 
@@ -29,7 +30,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedMsg {
 	/// The current time in microseconds from an arbitrary point in time.
-    pub cur_time: u32,
+    pub time: u64,
 	/// Which one of the 255 possible elements is being controlled.
     pub element: u8,
 	/// The color to be set to. The u8 values are mapped to an actual
@@ -45,7 +46,7 @@ impl Default for LedMsg {
     #[inline]
     fn default() -> Self {
         LedMsg {
-            cur_time: 0,
+            time: 0,
             element: 0,
             color: 0,
             cmd: Command::Null,
@@ -71,6 +72,9 @@ pub enum Error {
     Misc(String),
     #[cfg(feature = "bluetooth")]
     Bluetooth(rustable::Error),
+    ServiceNotFound,
+    CharNotFound,
+    DescNotFound
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
@@ -82,28 +86,14 @@ impl From<ham::Error> for Error {
 }
 impl From<rustable::Error> for Error {
     fn from(err: rustable::Error) -> Self {
-        match err {
-            rustable::Error::Timeout => Error::Timeout("BLE timeout".to_string()),
-            _ => Error::Bluetooth(err),
-        }
+		Error::Bluetooth(err)
     }
 }
-fn slice_to_u32<F>(buf: &[u8], bytes: usize, or_else: F) -> Result<u32, Error>
-where
-    F: FnOnce() -> Error,
-{
-    let bytes = bytes.min(4);
-    let &u0 = buf.get(bytes - 1).ok_or_else(or_else)?;
-    let mut ret = u0 as u32;
-    let bytes = bytes - 1;
-    for i in 0..bytes {
-        ret += (buf[i] as u32) << ((bytes - i) * 8);
-    }
-    Ok(ret)
-}
+const U32_MAX: u64 = std::u32::MAX as u64;
+
 impl LedMsg {
     pub const MAX_LEN: usize = 1 + 2 + 4 + 1; // flags + color/elment + time + cmd_value
-    fn deserialize(buf: &[u8]) -> Result<Vec<LedMsg>, Error> {
+    fn deserialize(buf: &[u8], cur_time: u64) -> Result<Vec<LedMsg>, Error> {
         let mut ret = Vec::new();
         if buf.len() == 0 {
             return Ok(Vec::new());
@@ -112,10 +102,27 @@ impl LedMsg {
                 "Buffer is too short and doesn't contain time.".to_string(),
             ));
         }
-        let time = ((buf[0] as u32) << 24)
-            + ((buf[1] as u32) << 16)
-            + ((buf[2] as u32) << 8)
-            + buf[3] as u32;
+		let mut time_buf = [0; 8];
+		time_buf[..4].copy_from_slice(&buf[..4]);
+		let msg_time = u64::from_le_bytes(time_buf);
+		let mask = cur_time & !U32_MAX; // get only the highest sig bytes
+		// Calculate the possible msg times and select closest to actual time.
+		let mut time = msg_time & mask; 
+		let abs_diff =  (cur_time.wrapping_sub(time) as i64).abs();
+
+		let (alt_diff, alt_pos) = if cur_time & U32_MAX >= U32_MAX + 1 {
+			let after = mask.wrapping_add(U32_MAX + 1);
+			let after_pos = msg_time & after;
+			((cur_time.wrapping_sub(after_pos) as i64).abs(), after_pos)
+		} else {
+			let before = mask.wrapping_sub(U32_MAX + 1);
+			let before_pos = msg_time & before;
+			((cur_time.wrapping_sub(before_pos) as i64).abs(), before_pos)
+		};
+		if alt_diff < abs_diff {
+			time = alt_pos;
+		}
+
         let mut i = 4;
         while i < buf.len() {
             let extra_bytes = || {
@@ -127,34 +134,20 @@ impl LedMsg {
             if i + 2 >= buf.len() {
                 return Err(extra_bytes());
             }
-            let (cur_time, extra0) = match buf[i] >> 5 {
-                0x00 => (time, 0),
-                0x01 => (
-                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 1, extra_bytes)?),
-                    1,
-                ),
-                0x02 => (
-                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 2, extra_bytes)?),
-                    2,
-                ),
-                0x03 => (
-                    time.wrapping_add(slice_to_u32(&buf[i + 3..], 3, extra_bytes)?),
-                    3,
-                ),
-                0x04 => (slice_to_u32(&buf[i + 3..], 4, extra_bytes)?, 4),
-                0x05 => (
-                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 1, extra_bytes)?),
-                    1,
-                ),
-                0x06 => (
-                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 2, extra_bytes)?),
-                    2,
-                ),
-                0x07 => (
-                    time.wrapping_sub(slice_to_u32(&buf[i + 3..], 3, extra_bytes)?),
-                    3,
-                ),
-                _ => unreachable!(),
+            let (offset, extra0) = match buf[i] >> 6 {
+                0x00 => (0, 0),
+                0x01 => (buf[i + 3] as i32, 1),
+				0x02 => {
+					let mut i_buf = [0; 2];
+					i_buf.copy_from_slice(&buf[i+3..i+5]);
+					(i16::from_le_bytes(i_buf) as i32, 2)
+				}
+                0x03 => {
+					let mut i_buf = [0; 4];
+					i_buf.copy_from_slice(&buf[i+3..i+7]);
+					(i32::from_le_bytes(i_buf), 4)
+                },
+				_ => unreachable!(),
             };
             let (cmd, extra1) = match (buf[i] >> 2) & 0x07 {
                 0x00 => (Command::Null, 0),
@@ -181,8 +174,9 @@ impl LedMsg {
                     )))
                 }
             };
+			let time = time.wrapping_add(offset as u64);
             let msg = LedMsg {
-                cur_time,
+                time,
                 element: buf[i + 1],
                 color: buf[i + 2],
                 cmd,
@@ -192,42 +186,28 @@ impl LedMsg {
         }
         Ok(ret)
     }
-    fn serialize(msgs: &[LedMsg], ret: &mut [u8], time: Option<u32>) -> (usize, usize) {
+    fn serialize(msgs: &[LedMsg], ret: &mut [u8], cur_time: u64) -> (usize, usize) {
         assert!(ret.len() >= 7);
-		let time = match time {
-			Some(t) => t,
-			None => msgs[0].cur_time
-		};
-        ret[0..4].copy_from_slice(&time.to_be_bytes());
+        ret[0..4].copy_from_slice(&cur_time.to_le_bytes()[0..4]);
         let mut i = 4;
         for (j, msg) in msgs.iter().enumerate() {
-            let mut buf = [0; 8];
-            let diff = msg.cur_time.wrapping_sub(time);
-            let (flag0, extra0) = if diff == 0 {
-                ((0x0 << 5), 0)
-            } else if diff < 256 {
-                buf[3] = diff as u8;
-                ((0x1 << 5), 1)
-            } else if diff < 65536 {
-                buf[3..5].copy_from_slice(&diff.to_be_bytes()[2..4]);
-                ((0x02 << 5), 2)
-            } else if diff < 16777216 {
-                buf[3..6].copy_from_slice(&diff.to_be_bytes()[1..4]);
-                ((0x03 << 5), 3)
-            } else if diff < 2147483648 || diff >= 2147483648 + 16777216 {
-                buf[3..7].copy_from_slice(&msg.cur_time.to_be_bytes());
-                ((0x04 << 5), 4)
-            } else if diff < 2147483648 + 256 {
-                buf[3] = diff as u8;
-                ((0x05 << 5), 1)
-            } else if diff < 2147483648 + 65536 {
-                buf[3..5].copy_from_slice(&diff.to_be_bytes()[2..4]);
-                ((0x06 << 5), 2)
+            let mut buf = [0u8; 8];
+			let offset = msg.time.wrapping_sub(cur_time) as i64;
+            let (flag0, extra0) = if offset == 0 {
+                ((0x0 << 6), 0)
+            } else if let Ok(off) = i8::try_from(offset) {
+                buf[3] = off as u8;
+                ((0x1 << 6), 1)
+            } else if let Ok(off) = i16::try_from(offset) {
+                buf[3..5].copy_from_slice(&off.to_le_bytes()[..]);
+                ((0x02 << 6), 2)
+            } else if let Ok(off) = i32::try_from(offset) {
+                buf[3..7].copy_from_slice(&off.to_le_bytes()[..]);
+                ((0x03 << 6), 4)
             } else {
-                // implied: if diff < 2147483648 + 16777216, because of exhaustion
-                buf[3..6].copy_from_slice(&diff.to_be_bytes()[1..4]);
-                ((0x07 << 5), 3)
-            };
+				// messages outside the interval are ignored
+				continue;
+			};
             let (flag1, extra1) = match msg.cmd {
                 Command::Null => (0x00 << 2, 0),
                 Command::Flat(v) => {
@@ -268,7 +248,7 @@ impl LedMsg {
     }
 }
 pub trait Receiver {
-    fn cur_time(&self) -> u32;
+    fn cur_time(&self) -> u64;
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error>;
     #[inline]
     fn try_recv(&mut self) -> Result<Vec<LedMsg>, Error> {
@@ -308,7 +288,7 @@ impl<T: PacketReceiver> HamReceiver<T> {
     }
 }
 */
-
+/*
 impl<T: PacketReceiver> Receiver for T {
     #[inline]
     fn cur_time(&self) -> u32 {
@@ -317,7 +297,7 @@ impl<T: PacketReceiver> Receiver for T {
     #[inline]
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
         let msg = self.recv_pkt_to(timeout)?;
-        LedMsg::deserialize(&msg)
+        LedMsg::deserialize(&msg self.cur_time())
     }
     #[inline]
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
@@ -325,16 +305,18 @@ impl<T: PacketReceiver> Receiver for T {
         LedMsg::deserialize(&msg)
     }
 }
+*/
 
 pub trait Sender {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error>;
+	fn get_time(&self) -> u64;
 }
 /*
 pub struct HamSender<T: PacketSender> {
     ham: T,
 }
 */
-
+/*
 impl<T: PacketSender> Sender for T {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
         let first_msg_time = if let Some(msg) = msgs.get(0) {
@@ -359,27 +341,24 @@ impl<T: PacketSender> Sender for T {
         }
         Ok(())
     }
-}
+}*/
 
 pub struct LocalReceiver {
-    last_inst: Instant,
-    last_time: u32,
-    recv: mpsc::Receiver<(Vec<LedMsg>, Instant, u32)>,
+    start: Instant,
+    recv: mpsc::Receiver<Vec<LedMsg>>,
 }
 
 impl Receiver for LocalReceiver {
     #[inline]
-    fn cur_time(&self) -> u32 {
-        (Instant::now().duration_since(self.last_inst).as_micros() + self.last_time as u128) as u32
+    fn cur_time(&self) -> u64 {
+		self.start.elapsed().as_micros() as u64
     }
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
         let msgs = self
             .recv
             .recv()
             .map_err(|_| Error::Unrecoverable("Sender has disconnected.".to_string()))?;
-        self.last_inst = msgs.1;
-        self.last_time = msgs.2;
-        Ok(msgs.0)
+        Ok(msgs)
     }
     fn recv_to(&mut self, timeout: Duration) -> Result<Vec<LedMsg>, Error> {
         let msgs = self.recv.recv_timeout(timeout).map_err(|e| match e {
@@ -390,37 +369,34 @@ impl Receiver for LocalReceiver {
                 Error::Unrecoverable("LocalReceiver: senders disconnected".to_string())
             }
         })?;
-        self.last_inst = msgs.1;
-        self.last_time = msgs.2;
-        Ok(msgs.0)
+        Ok(msgs)
     }
 }
+
 pub struct LocalSender {
-    sender: mpsc::SyncSender<(Vec<LedMsg>, Instant, u32)>,
+	start: Instant,
+    sender: mpsc::SyncSender<Vec<LedMsg>>
 }
 impl Sender for LocalSender {
     #[inline]
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
-        let first_msg_time = if let Some(msg) = msgs.get(0) {
-            msg.cur_time
-        } else {
-            return Ok(());
-        };
         self.sender
-            .send((Vec::from(msgs), Instant::now(), first_msg_time))
+            .send(Vec::from(msgs))
             .map_err(|_| Error::Unrecoverable("LocalSender: receiver disconnected".to_string()))
     }
+	fn get_time(&self) -> u64 {
+		self.start.elapsed().as_micros() as u64
+	}
 }
 
 pub fn channel(size: usize) -> (LocalSender, LocalReceiver) {
     let (sender, recv) = mpsc::sync_channel(size);
-    let last_inst = Instant::now();
+    let start = Instant::now();
     (
-        LocalSender { sender },
+        LocalSender { start, sender },
         LocalReceiver {
-            last_inst,
-            last_time: 0,
-            recv,
+			start,
+            recv
         },
     )
 }

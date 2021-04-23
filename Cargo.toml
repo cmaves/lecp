@@ -21,7 +21,12 @@ clap = "2.33.0"
 gpio-cdev = "0.2.0"
 ham = { version = "0.2.0", optional=true }
 rs_ws281x = { version = "0.2.3", optional=true }
-rustable = { path = "/home/cmaves/rustable", optional=true }
+# btutils = { git = "https://github.com/cmaves/btutils.git" }
+btutils = { path  = "/home/cmaves/btutils" }
+rustable = { git = "https://github.com/cmaves/rustable", branch = "async", optional = true }
+# rustable = { path = "/home/cmaves/rustable", optional = true }
+async-std = "1.9"
+futures = "0.3"
 spidev = "0.4.0"
 nix = "0.18.0"
 
