@@ -3,13 +3,13 @@
 //! transmission mechanisms.
 //! Elements are controlled via messages that are serialized in to a byte-stream
 //! and deserialized at the receiver which then controls the lights using GPIO pins.
-//! 
+//!
 //! ## Current implemented control mechanisms
 //! - Bluetooth Low Energy with **bluetooth** feature.
 //! - RFM69HCW packet radio with **ham** feature.
 
-pub mod controller;
 pub mod color;
+pub mod controller;
 
 #[cfg(feature = "bluetooth")]
 pub mod bluetooth;
@@ -21,25 +21,24 @@ use rustable;
 pub mod tests;
 
 // use ham::{PacketReceiver, PacketSender};
-use std::sync::mpsc;
 use std::convert::TryFrom;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
-
 
 /// `LedMsg` is the message format used control LEDs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LedMsg {
-	/// The current time in microseconds from an arbitrary point in time.
+    /// The current time in microseconds from an arbitrary point in time.
     pub time: u64,
-	/// Which one of the 255 possible elements is being controlled.
+    /// Which one of the 255 possible elements is being controlled.
     pub element: u8,
-	/// The color to be set to. The u8 values are mapped to an actual
-	/// RGBA [Color`] using a [`ColorMap`].
-	///
-	/// [`Color`]: ./color/struct.Color.html
-	/// [`ColorMap`]: ./color/struct.ColorMap.html
+    /// The color to be set to. The u8 values are mapped to an actual
+    /// RGBA [Color`] using a [`ColorMap`].
+    ///
+    /// [`Color`]: ./color/struct.Color.html
+    /// [`ColorMap`]: ./color/struct.ColorMap.html
     pub color: u8,
-	/// Controls what the LED does.
+    /// Controls what the LED does.
     pub cmd: Command,
 }
 impl Default for LedMsg {
@@ -74,7 +73,7 @@ pub enum Error {
     Bluetooth(rustable::Error),
     ServiceNotFound,
     CharNotFound,
-    DescNotFound
+    DescNotFound,
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
@@ -86,7 +85,7 @@ impl From<ham::Error> for Error {
 }
 impl From<rustable::Error> for Error {
     fn from(err: rustable::Error) -> Self {
-		Error::Bluetooth(err)
+        Error::Bluetooth(err)
     }
 }
 const U32_MAX: u64 = std::u32::MAX as u64;
@@ -102,26 +101,26 @@ impl LedMsg {
                 "Buffer is too short and doesn't contain time.".to_string(),
             ));
         }
-		let mut time_buf = [0; 8];
-		time_buf[..4].copy_from_slice(&buf[..4]);
-		let msg_time = u64::from_le_bytes(time_buf);
-		let mask = cur_time & !U32_MAX; // get only the highest sig bytes
-		// Calculate the possible msg times and select closest to actual time.
-		let mut time = msg_time & mask; 
-		let abs_diff =  (cur_time.wrapping_sub(time) as i64).abs();
+        let mut time_buf = [0; 8];
+        time_buf[..4].copy_from_slice(&buf[..4]);
+        let msg_time = u64::from_le_bytes(time_buf);
+        let mask = cur_time & !U32_MAX; // get only the highest sig bytes
+                                        // Calculate the possible msg times and select closest to actual time.
+        let mut time = msg_time & mask;
+        let abs_diff = (cur_time.wrapping_sub(time) as i64).abs();
 
-		let (alt_diff, alt_pos) = if cur_time & U32_MAX >= U32_MAX + 1 {
-			let after = mask.wrapping_add(U32_MAX + 1);
-			let after_pos = msg_time & after;
-			((cur_time.wrapping_sub(after_pos) as i64).abs(), after_pos)
-		} else {
-			let before = mask.wrapping_sub(U32_MAX + 1);
-			let before_pos = msg_time & before;
-			((cur_time.wrapping_sub(before_pos) as i64).abs(), before_pos)
-		};
-		if alt_diff < abs_diff {
-			time = alt_pos;
-		}
+        let (alt_diff, alt_pos) = if cur_time & U32_MAX >= U32_MAX + 1 {
+            let after = mask.wrapping_add(U32_MAX + 1);
+            let after_pos = msg_time & after;
+            ((cur_time.wrapping_sub(after_pos) as i64).abs(), after_pos)
+        } else {
+            let before = mask.wrapping_sub(U32_MAX + 1);
+            let before_pos = msg_time & before;
+            ((cur_time.wrapping_sub(before_pos) as i64).abs(), before_pos)
+        };
+        if alt_diff < abs_diff {
+            time = alt_pos;
+        }
 
         let mut i = 4;
         while i < buf.len() {
@@ -137,17 +136,17 @@ impl LedMsg {
             let (offset, extra0) = match buf[i] >> 6 {
                 0x00 => (0, 0),
                 0x01 => (buf[i + 3] as i32, 1),
-				0x02 => {
-					let mut i_buf = [0; 2];
-					i_buf.copy_from_slice(&buf[i+3..i+5]);
-					(i16::from_le_bytes(i_buf) as i32, 2)
-				}
+                0x02 => {
+                    let mut i_buf = [0; 2];
+                    i_buf.copy_from_slice(&buf[i + 3..i + 5]);
+                    (i16::from_le_bytes(i_buf) as i32, 2)
+                }
                 0x03 => {
-					let mut i_buf = [0; 4];
-					i_buf.copy_from_slice(&buf[i+3..i+7]);
-					(i32::from_le_bytes(i_buf), 4)
-                },
-				_ => unreachable!(),
+                    let mut i_buf = [0; 4];
+                    i_buf.copy_from_slice(&buf[i + 3..i + 7]);
+                    (i32::from_le_bytes(i_buf), 4)
+                }
+                _ => unreachable!(),
             };
             let (cmd, extra1) = match (buf[i] >> 2) & 0x07 {
                 0x00 => (Command::Null, 0),
@@ -174,7 +173,7 @@ impl LedMsg {
                     )))
                 }
             };
-			let time = time.wrapping_add(offset as u64);
+            let time = time.wrapping_add(offset as u64);
             let msg = LedMsg {
                 time,
                 element: buf[i + 1],
@@ -192,7 +191,7 @@ impl LedMsg {
         let mut i = 4;
         for (j, msg) in msgs.iter().enumerate() {
             let mut buf = [0u8; 8];
-			let offset = msg.time.wrapping_sub(cur_time) as i64;
+            let offset = msg.time.wrapping_sub(cur_time) as i64;
             let (flag0, extra0) = if offset == 0 {
                 ((0x0 << 6), 0)
             } else if let Ok(off) = i8::try_from(offset) {
@@ -205,9 +204,9 @@ impl LedMsg {
                 buf[3..7].copy_from_slice(&off.to_le_bytes()[..]);
                 ((0x03 << 6), 4)
             } else {
-				// messages outside the interval are ignored
-				continue;
-			};
+                // messages outside the interval are ignored
+                continue;
+            };
             let (flag1, extra1) = match msg.cmd {
                 Command::Null => (0x00 << 2, 0),
                 Command::Flat(v) => {
@@ -309,7 +308,7 @@ impl<T: PacketReceiver> Receiver for T {
 
 pub trait Sender {
     fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error>;
-	fn get_time(&self) -> u64;
+    fn get_time(&self) -> u64;
 }
 /*
 pub struct HamSender<T: PacketSender> {
@@ -351,7 +350,7 @@ pub struct LocalReceiver {
 impl Receiver for LocalReceiver {
     #[inline]
     fn cur_time(&self) -> u64 {
-		self.start.elapsed().as_micros() as u64
+        self.start.elapsed().as_micros() as u64
     }
     fn recv(&mut self) -> Result<Vec<LedMsg>, Error> {
         let msgs = self
@@ -374,8 +373,8 @@ impl Receiver for LocalReceiver {
 }
 
 pub struct LocalSender {
-	start: Instant,
-    sender: mpsc::SyncSender<Vec<LedMsg>>
+    start: Instant,
+    sender: mpsc::SyncSender<Vec<LedMsg>>,
 }
 impl Sender for LocalSender {
     #[inline]
@@ -384,19 +383,13 @@ impl Sender for LocalSender {
             .send(Vec::from(msgs))
             .map_err(|_| Error::Unrecoverable("LocalSender: receiver disconnected".to_string()))
     }
-	fn get_time(&self) -> u64 {
-		self.start.elapsed().as_micros() as u64
-	}
+    fn get_time(&self) -> u64 {
+        self.start.elapsed().as_micros() as u64
+    }
 }
 
 pub fn channel(size: usize) -> (LocalSender, LocalReceiver) {
     let (sender, recv) = mpsc::sync_channel(size);
     let start = Instant::now();
-    (
-        LocalSender { start, sender },
-        LocalReceiver {
-			start,
-            recv
-        },
-    )
+    (LocalSender { start, sender }, LocalReceiver { start, recv })
 }
