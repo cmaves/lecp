@@ -14,9 +14,6 @@ pub mod controller;
 #[cfg(feature = "bluetooth")]
 pub mod bluetooth;
 
-#[cfg(feature = "bluetooth")]
-use rustable;
-
 #[cfg(test)]
 pub mod tests;
 
@@ -94,7 +91,7 @@ impl LedMsg {
     pub const MAX_LEN: usize = 1 + 2 + 4 + 1; // flags + color/elment + time + cmd_value
     fn deserialize(buf: &[u8], cur_time: u64) -> Result<Vec<LedMsg>, Error> {
         let mut ret = Vec::new();
-        if buf.len() == 0 {
+        if buf.is_empty() {
             return Ok(Vec::new());
         } else if buf.len() < 4 {
             return Err(Error::BadInput(
@@ -109,7 +106,7 @@ impl LedMsg {
         let mut time = msg_time & mask;
         let abs_diff = (cur_time.wrapping_sub(time) as i64).abs();
 
-        let (alt_diff, alt_pos) = if cur_time & U32_MAX >= U32_MAX + 1 {
+        let (alt_diff, alt_pos) = if cur_time & U32_MAX >= 2u64.pow(31) {
             let after = mask.wrapping_add(U32_MAX + 1);
             let after_pos = msg_time & after;
             ((cur_time.wrapping_sub(after_pos) as i64).abs(), after_pos)

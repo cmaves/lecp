@@ -95,7 +95,7 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
             }
             if (cur_time.wrapping_sub(msg.time) as i64).abs() <= 5_000_000 {
                 let e = msg.element as usize;
-                if let None = elements[e] {
+                if elements[e].is_none() {
                     if e + 1 > last_active {
                         last_active = e + 1;
                     }
@@ -104,10 +104,8 @@ impl<R: Receiver, C: Controller> Renderer<R, C> {
                     }
                     elements[e] = Some(i);
                 }
-            } else {
-                if self.verbose >= 3 {
-                    eprintln!("ignoring msg {} do to time constraints", i);
-                }
+            } else if self.verbose >= 3 {
+                eprintln!("ignoring msg {} do to time constraints", i);
             }
         }
         let mut flat_stack = 0;
