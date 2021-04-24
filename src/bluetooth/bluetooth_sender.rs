@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 use super::ECP_UUID;
 
+use log::{error, warn};
+
 pub struct BluetoothSender {
     _last_sync: Instant,
     time: TimeClient,
@@ -22,6 +24,9 @@ impl BluetoothSender {
     pub async fn new(hci: u8, mac: MAC) -> Result<Self, Error> {
         let hci = Adapter::new(hci).await?;
         let dev = hci.get_device(mac).await?;
+        if !dev.connected().await? {
+            return Err(Error::NotConnected);
+        }
         let ecp_serv = dev.get_service(ECP_UUID).await?;
         let includes = ecp_serv.get_includes().await?;
         let mut time_serv = None;
@@ -38,21 +43,23 @@ impl BluetoothSender {
         }
         let time_serv = match time_serv {
             Some(s) => s,
-            None => dev.get_service(TIME_SERV).await?,
+            None => {
+                warn!("LECP service didn't include Time Service. Fetching manually");
+                dev.get_service(TIME_SERV).await?
+            }
         };
         let msg_serv = match msg_serv {
             Some(s) => s,
-            None => dev.get_service(MSG_SERV).await?,
+            None => {
+                warn!("LECP service didn't include Msg Service. Fetching manually");
+                dev.get_service(MSG_SERV).await?
+            }
         };
 
-        let time = TimeClient::from_service(time_serv)
-            .await
-            .map_err(|_| rustable::Error::UnknownServ(TIME_SERV))?;
+        let time = TimeClient::from_service(time_serv).await?;
         let mut msg_options = MsgOptions::new(mac);
         msg_options.target_lt = Duration::from_millis(100);
-        let msg = MsgChannelClient::from_service(msg_serv, msg_options)
-            .await
-            .map_err(|_| rustable::Error::UnknownServ(MSG_SERV))?;
+        let msg = MsgChannelClient::from_service(msg_serv, msg_options).await?;
         let synced = time.do_client_sync().await.expect("Err unimplemented!");
         if !synced {
             unimplemented!("What to do if time sync fails?")
@@ -72,6 +79,18 @@ impl BluetoothSender {
             Ok(())
         }
     }
+    pub fn get_avg_lat(&self) -> Duration {
+        self.msg.get_avg_lat()
+    }
+    pub fn get_sent(&self) -> u32 {
+        self.msg.get_sent()
+    }
+    pub fn get_loss_rate(&self) -> f64 {
+        self.msg.get_loss_rate()
+    }
+    pub fn mtu(&self) -> u16 {
+        self.msg.get_out_mtu()
+    }
     pub fn shutdown(self) -> Result<(), Error> {
         let t_shut = self.time.shutdown();
         let m_shut = self.msg.shutdown();
@@ -83,16 +102,21 @@ impl BluetoothSender {
 }
 
 impl LECPSender for BluetoothSender {
-    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
+    fn send(&mut self, msgs: &mut [LedMsg], is_time_offset: bool) -> Result<(), Error> {
         let mut out_buf = [0; 512];
         let mtu = self.msg.get_out_mtu();
         let out_buf = &mut out_buf[..mtu as usize];
         let mut msgs_sent = 0;
+        let cur_time = self.get_time();
+        if is_time_offset {
+            for msg in msgs.iter_mut() {
+                msg.time = cur_time.wrapping_add(msg.time);
+            }
+        }
         while msgs_sent < msgs.len() {
             let to_send = &msgs[msgs_sent..];
-            let (sent, used) = LedMsg::serialize(to_send, out_buf, self.get_time());
+            let (sent, used) = LedMsg::serialize(to_send, out_buf, cur_time);
             msgs_sent += sent;
-            eprintln!("sending ({}, {}): {:x?}", sent, used, &out_buf[..used]);
             block_on(self.msg.send_msg(&out_buf[..used])).expect("Err unimplemented");
         }
         Ok(())

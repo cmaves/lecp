@@ -68,9 +68,11 @@ pub enum Error {
     Misc(String),
     #[cfg(feature = "bluetooth")]
     Bluetooth(rustable::Error),
-    ServiceNotFound,
-    CharNotFound,
-    DescNotFound,
+    #[cfg(feature = "bluetooth")]
+    BtTiming(btutils::timing::Error),
+    #[cfg(feature = "bluetooth")]
+    BtMsg(btutils::messaging::Error),
+    NotConnected,
 }
 impl From<ham::Error> for Error {
     fn from(err: ham::Error) -> Self {
@@ -83,6 +85,16 @@ impl From<ham::Error> for Error {
 impl From<rustable::Error> for Error {
     fn from(err: rustable::Error) -> Self {
         Error::Bluetooth(err)
+    }
+}
+impl From<btutils::timing::Error> for Error {
+    fn from(err: btutils::timing::Error) -> Self {
+        Error::BtTiming(err)
+    }
+}
+impl From<btutils::messaging::Error> for Error {
+    fn from(err: btutils::messaging::Error) -> Self {
+        Error::BtMsg(err)
     }
 }
 const U32_MAX: u64 = std::u32::MAX as u64;
@@ -304,7 +316,7 @@ impl<T: PacketReceiver> Receiver for T {
 */
 
 pub trait Sender {
-    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error>;
+    fn send(&mut self, msgs: &mut [LedMsg], is_time_offset: bool) -> Result<(), Error>;
     fn get_time(&self) -> u64;
 }
 /*
@@ -375,7 +387,13 @@ pub struct LocalSender {
 }
 impl Sender for LocalSender {
     #[inline]
-    fn send(&mut self, msgs: &[LedMsg]) -> Result<(), Error> {
+    fn send(&mut self, msgs: &mut [LedMsg], is_msg_offset: bool) -> Result<(), Error> {
+        if is_msg_offset {
+            let cur_time = self.get_time();
+            for msg in msgs.iter_mut() {
+                msg.time = cur_time.wrapping_add(msg.time);
+            }
+        }
         self.sender
             .send(Vec::from(msgs))
             .map_err(|_| Error::Unrecoverable("LocalSender: receiver disconnected".to_string()))

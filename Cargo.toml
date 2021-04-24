@@ -29,6 +29,7 @@ async-std = "1.9"
 futures = "0.3"
 spidev = "0.4.0"
 nix = "0.18.0"
+log = "0.4"
 
 [dev-dependencies]
 rand = "0.7.3"
