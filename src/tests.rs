@@ -12,7 +12,7 @@ fn rng() -> StdRng {
 fn generate_test_msgs() -> [LedMsg; 255] {
     let mut test_vals = [LedMsg {
         cmd: Command::Null,
-        cur_time: 0,
+        time: 0,
         color: 0,
         element: 0,
     }; 255];
@@ -40,13 +40,17 @@ fn generate_test_msgs() -> [LedMsg; 255] {
         }
     }
     test_vals.shuffle(&mut rng);
-    for i in 0..4 {
-        for msg in test_vals.iter_mut().skip(i).step_by(4) {
-            let cur_time: u32 = rng.gen();
-            msg.cur_time = cur_time >> (i * 8);
-            msg.element = rng.gen();
-            msg.color = rng.gen();
-        }
+    for msg in test_vals.iter_mut() {
+        let b: u8 = rng.gen();
+        msg.time = match b & 0x03 {
+            0x00 => 0,
+            0x01 => rng.gen::<i8>() as u64,
+            0x02 => rng.gen::<i16>() as u64,
+            0x03 => rng.gen::<i32>() as u64,
+            _ => unreachable!(),
+        };
+        msg.element = rng.gen();
+        msg.color = rng.gen();
     }
     test_vals
 }
@@ -55,12 +59,13 @@ fn serial_deserialize() {
     let test_vals = generate_test_msgs();
     let mut i = 0;
     // serialize
+    let mut buf = [0; LedMsg::MAX_LEN + 4];
     while i < test_vals.len() {
-        let mut buf = [0; 255];
-        let (bytes, msgs) = LedMsg::serialize(&test_vals[i..], &mut buf);
+        let (bytes, msgs) = LedMsg::serialize(&test_vals[i..], &mut buf, 0);
         eprintln!("bytes: {}, msgs: {}", bytes, msgs);
+        eprintln!("{:X?}", &buf[..bytes]);
         eprintln!("{:#?}", &test_vals[i..i + msgs]);
-        let cpy = LedMsg::deserialize(&buf[..bytes]).unwrap();
+        let cpy = LedMsg::deserialize(&buf[..bytes], 0).unwrap();
         assert_eq!(&test_vals[i..i + msgs], &cpy[..]);
         i += msgs;
     }

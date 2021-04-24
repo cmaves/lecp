@@ -103,7 +103,7 @@ impl LedMsg {
         let msg_time = u64::from_le_bytes(time_buf);
         let mask = cur_time & !U32_MAX; // get only the highest sig bytes
                                         // Calculate the possible msg times and select closest to actual time.
-        let mut time = msg_time & mask;
+        let mut time = msg_time | mask;
         let abs_diff = (cur_time.wrapping_sub(time) as i64).abs();
 
         let (alt_diff, alt_pos) = if cur_time & U32_MAX >= 2u64.pow(31) {
@@ -118,6 +118,7 @@ impl LedMsg {
         if alt_diff < abs_diff {
             time = alt_pos;
         }
+        println!("possible: {}", time);
 
         let mut i = 4;
         while i < buf.len() {
@@ -132,7 +133,7 @@ impl LedMsg {
             }
             let (offset, extra0) = match buf[i] >> 6 {
                 0x00 => (0, 0),
-                0x01 => (buf[i + 3] as i32, 1),
+                0x01 => (buf[i + 3] as i8 as i32, 1),
                 0x02 => {
                     let mut i_buf = [0; 2];
                     i_buf.copy_from_slice(&buf[i + 3..i + 5]);
@@ -189,6 +190,7 @@ impl LedMsg {
         for (j, msg) in msgs.iter().enumerate() {
             let mut buf = [0u8; 8];
             let offset = msg.time.wrapping_sub(cur_time) as i64;
+            println!("offset: {}", offset);
             let (flag0, extra0) = if offset == 0 {
                 ((0x0 << 6), 0)
             } else if let Ok(off) = i8::try_from(offset) {
