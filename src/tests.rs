@@ -61,7 +61,7 @@ fn serial_deserialize() {
     // serialize
     let mut buf = [0; LedMsg::MAX_LEN + 4];
     while i < test_vals.len() {
-        let (bytes, msgs) = LedMsg::serialize(&test_vals[i..], &mut buf, 0);
+        let (msgs, bytes) = LedMsg::serialize(&test_vals[i..], &mut buf, 0);
         eprintln!("bytes: {}, msgs: {}", bytes, msgs);
         eprintln!("{:X?}", &buf[..bytes]);
         eprintln!("{:#?}", &test_vals[i..i + msgs]);

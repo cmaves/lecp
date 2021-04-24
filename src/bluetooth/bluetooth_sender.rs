@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use super::ECP_UUID;
 
 pub struct BluetoothSender {
-    last_sync: Instant,
+    _last_sync: Instant,
     time: TimeClient,
     msg: MsgChannelClient,
 }
@@ -36,9 +36,13 @@ impl BluetoothSender {
                 break;
             }
         }
-        let (time_serv, msg_serv) = match (time_serv, msg_serv) {
-            (Some(s0), Some(s1)) => (s0, s1),
-            _ => return Err(rustable::Error::UnknownServ(ECP_UUID).into()),
+        let time_serv = match time_serv {
+            Some(s) => s,
+            None => dev.get_service(TIME_SERV).await?,
+        };
+        let msg_serv = match msg_serv {
+            Some(s) => s,
+            None => dev.get_service(MSG_SERV).await?,
         };
 
         let time = TimeClient::from_service(time_serv)
@@ -57,7 +61,7 @@ impl BluetoothSender {
         Ok(Self {
             time,
             msg,
-            last_sync,
+            _last_sync: last_sync,
         })
     }
     pub fn do_time_sync(&self) -> Result<(), Error> {
@@ -88,6 +92,7 @@ impl LECPSender for BluetoothSender {
             let to_send = &msgs[msgs_sent..];
             let (sent, used) = LedMsg::serialize(to_send, out_buf, self.get_time());
             msgs_sent += sent;
+            eprintln!("sending ({}, {}): {:x?}", sent, used, &out_buf[..used]);
             block_on(self.msg.send_msg(&out_buf[..used])).expect("Err unimplemented");
         }
         Ok(())

@@ -118,7 +118,6 @@ impl LedMsg {
         if alt_diff < abs_diff {
             time = alt_pos;
         }
-        println!("possible: {}", time);
 
         let mut i = 4;
         while i < buf.len() {
@@ -190,7 +189,6 @@ impl LedMsg {
         for (j, msg) in msgs.iter().enumerate() {
             let mut buf = [0u8; 8];
             let offset = msg.time.wrapping_sub(cur_time) as i64;
-            println!("offset: {}", offset);
             let (flag0, extra0) = if offset == 0 {
                 ((0x0 << 6), 0)
             } else if let Ok(off) = i8::try_from(offset) {
@@ -235,14 +233,14 @@ impl LedMsg {
                 i += msg_len; // iterate for the next buffer
             } else {
                 // no room in buffer so discard last msg and return
-                return (i, j);
+                return (j, i);
             }
             if i + 3 > ret.len() {
                 // we wont have any room for next message
-                return (i, j + 1);
+                return (j + 1, i);
             }
         }
-        (i, msgs.len())
+        (msgs.len(), i)
     }
 }
 pub trait Receiver {
